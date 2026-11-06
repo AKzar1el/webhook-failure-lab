@@ -10,6 +10,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
+  unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -70,7 +71,12 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const expiredReplay = seenAt.has(id) && !seen.has(id);
     const metadata = { id, timestamp: ts, body, signature: req.headers['webhook-signature'],
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
+    const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
+      ts > receiverNow + 300;
+    const hasValidFutureSignature = syntheticFuture &&
+      verify({ secret, ...metadata, now: ts });
     const acceptedCurrent = verify({ secret, ...metadata }) ||
+      (unsafeAcceptFutureTimestamp && hasValidFutureSignature) ||
       (unsafeAcceptExpiredReplay && expiredReplay &&
         verify({ secret, ...metadata, tolerance: Number.POSITIVE_INFINITY }));
     const acceptedPrevious = previousSecret !== undefined && !unsafeRejectPreviousSecret &&
@@ -78,6 +84,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
     const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired);
     if (verifySignatures && !accepted) {
+      if (unsafeCommitFutureBeforeReject && hasValidFutureSignature && !seen.has(id)) {
+        // Broken fixture writes the effect before ultimately rejecting the future timestamp.
+        processedCount += 1; seen.add(id);
+      }
       if (unsafeProcessRetiredBeforeReject && signedByRetired && !seen.has(id)) {
         // Broken fixture commits the untrusted event but still returns a rejection status.
         processedCount += 1; seen.add(id);

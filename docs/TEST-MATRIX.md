@@ -22,6 +22,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Declared deduplication retention boundary and stale signed replay (programmatic opt-in) | Exact duplicate one second before retention expiry must not reprocess; unchanged signature at +301 seconds must be rejected without effect | Synthetic clock, premature-eviction and stale-replay acceptance broken receivers, no-op-clock negative fixture |
 | Same authenticated delivery ID reused with different signed payload (opt-in) | First signed event commits once; identical signed retry is idempotent; different validly signed body with same ID returns 409 without another effect | Local fixture catches silently acknowledged conflicts and reject-but-commit broken receivers |
 | Same ID and body re-signed at a different fresh timestamp (opt-in) | Both validly signed deliveries are acknowledged; first commits once, second makes no new observed effect | Local fixture catches signature-keyed deduplication and rejection of valid re-signatures; CLI config and composition regressions |
+| Correctly signed event dated one hour in the future (opt-in) | Reject 4xx without committing any new observed effect | Local negative fixtures detect accepted future timestamps and rejected events that still commit; no system clock change |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -152,6 +153,19 @@ does not test provider-specific retry policy or require a service to support
 re-signed duplicate IDs universally; enable it only for a local receiver
 whose application contract accepts that behavior. The observer remains
 caller-controlled, not proof of external exactly-once business effects.
+
+Enable `"rejectFutureSignedTimestamp": true` in local CLI configuration to
+exercise a symmetric signed-timestamp freshness contract. The runner sends
+an event whose HMAC correctly authenticates its ID, raw body and timestamp,
+but whose `webhook-timestamp` is **3600 seconds ahead** of the runner clock.
+The receiver must return one of `rejectionStatuses` (default 400/401/403),
+without changing the `processedCount` observer. It is opt-in to avoid
+claiming every provider requires identical clock-skew behavior. The built-in
+mock catches receivers that validate past expiry but accept far-future
+signatures, or reject future signatures after recording an effect. The
+scenario uses no wall-clock waits or system-clock changes; the runner and
+receiver should have reasonably synchronized clocks and a 300-second
+Standard Webhooks freshness policy. Passing cannot prove unobserved effects.
 
 ## Bounded next scenarios (not implemented yet)
 
