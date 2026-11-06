@@ -8,10 +8,12 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
+  unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
   const seenAt = new Map();
+  const seenConflictBodies = new Map();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
   const resourceStates = new Map();
@@ -79,6 +81,22 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         processedCount += 1; seen.add(id);
       }
       res.writeHead(401); res.end(); return;
+    }
+    if (typeof id === 'string' && id.startsWith('wfl_conflict_')) {
+      const priorBody = seenConflictBodies.get(id);
+      if (priorBody !== undefined) {
+        if (priorBody !== body) {
+          // Broken fixtures either hide a signed ID collision or reject it after committing.
+          if (unsafeCommitConflictingPayload) processedCount += 1;
+          res.writeHead(unsafeAcknowledgeConflictingPayload ? 200 : 409);
+          res.end('conflicting event ID payload'); return;
+        }
+        res.writeHead(200); res.end('accepted duplicate'); return;
+      }
+      processedCount += 1;
+      seen.add(id);
+      seenConflictBodies.set(id, body);
+      res.writeHead(200); res.end('accepted'); return;
     }
     if (supportOrderTransitions && typeof id === 'string' && id.startsWith('wfl_order_')) {
       let event;

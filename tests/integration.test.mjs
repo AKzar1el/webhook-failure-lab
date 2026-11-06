@@ -725,3 +725,86 @@ test('retention option and fake-time controller are validated before any request
       { secret }), /advanceReceiverTime/);
   });
 });
+
+test('opt-in reused signed event ID rejects conflicting authenticated payload without another effect', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, conflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const conflict = result.scenarios.at(-1);
+    assert.equal(conflict.scenario, 'signed_event_id_payload_conflict');
+    assert.deepEqual(conflict.httpStatuses, [200, 200, 409]);
+    assert.deepEqual(conflict.observedCounts, [2, 2, 2]);
+    assert.equal(conflict.expectedProcessedCount, 2);
+    assert.equal(conflict.passed, true);
+  });
+});
+
+test('conflicting signed event ID detects receiver that silently acknowledges different content', async () => {
+  await withServer({ unsafeAcknowledgeConflictingPayload: true }, async (config) => {
+    const result = await runLab({ ...config, conflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const conflict = result.scenarios.at(-1);
+    assert.deepEqual(conflict.httpStatuses, [200, 200, 200]);
+    assert.deepEqual(conflict.observedCounts, [2, 2, 2]);
+    assert.equal(conflict.passed, false);
+  });
+});
+
+test('conflicting signed event ID detects rejected event that nonetheless commits an effect', async () => {
+  await withServer({ unsafeCommitConflictingPayload: true }, async (config) => {
+    const result = await runLab({ ...config, conflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, false);
+    const conflict = result.scenarios.at(-1);
+    assert.deepEqual(conflict.httpStatuses, [200, 200, 409]);
+    assert.deepEqual(conflict.observedCounts, [2, 2, 3]);
+    assert.equal(conflict.expectedProcessedCount, 2);
+    assert.equal(conflict.passed, false);
+  });
+});
+
+test('conflicting event ID opt-in validates its configuration before sending requests', async () => {
+  await withServer({}, async (config) => {
+    for (const conflictingEventIdPayload of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, conflictingEventIdPayload }, { secret }),
+        /conflictingEventIdPayload/);
+    }
+    const response = await fetch(config.observer);
+    assert.equal((await response.json()).processedCount, 0);
+  });
+});
+
+test('conflicting signed event ID scenario composes with simultaneous duplicates', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, concurrentDuplicateDeliveries: 4,
+      conflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 6);
+    assert.equal(result.scenarios.at(-1).scenario, 'signed_event_id_payload_conflict');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [3, 3, 3]);
+  });
+});
+
+test('CLI exposes opt-in signed event ID conflict check without leaking signing material', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-conflict-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({
+      ...server.config, conflictingEventIdPayload: true,
+    }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'signed_event_id_payload_conflict');
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 200, 409]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes(secret.slice(6)));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});
