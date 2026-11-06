@@ -94,13 +94,37 @@ verified exactly-once business-side-effect guarantee. Both the count and
 instance identifier are self-reported by the receiver. Keep process control,
 the observer endpoint, and all synthetic signing secrets local to your tests.
 
+### Opt-in abrupt receiver exit after persisted commit
+
+Use `crashAfterPersist: true` **only through the programmatic `runLab` API**,
+passing a caller-owned `recoverReceiver` callback that confirms the original
+test receiver terminated and starts a new local process using the same state.
+For a fresh signed event, the runner sends the development-only header
+`x-wfl-test-fault: persist-then-crash-before-ack`. The test adapter must
+persist its observed effect and deduplication record and exit before an HTTP
+reply. The harness expects a transport error, invokes recovery, verifies a
+changed `receiverInstanceId` and one durable effect, then replays the
+**identical signed event** without the fault header. No extra observed effect
+may occur. Both recovery URLs must use HTTP loopback.
+
+The regression fixture exits a real local Node child with code 47 after an
+awaited atomic JSON-file rename. Broken variants lose the durable dedupe key
+or the effect count and are detected; an ignored fault also fails. The CLI
+cannot control processes, so a missing programmatic callback fails closed.
+Run `restartAfterCommit` and `crashAfterPersist` separately. Use only
+synthetic keys, disposable local storage and a development-only adapter.
+
+This is a **post-rename process-exit** contract, not a proof of power-loss
+durability, fsync, a torn multi-write database transaction, or external
+exactly-once effects. Both recovery controller and observer are user-supplied.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, and one controlled receiver restart (programmatic API only). The restart fixture checks persistence across distinct local processes, **not** sudden-crash safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart and a post-persistence abrupt receiver exit (both process tests programmatic-only). No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

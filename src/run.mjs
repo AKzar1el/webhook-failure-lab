@@ -48,6 +48,13 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
   }
+  const crashAfterPersist = config.crashAfterPersist;
+  if (crashAfterPersist !== undefined && typeof crashAfterPersist !== 'boolean') {
+    throw new TypeError('crashAfterPersist must be a boolean');
+  }
+  if (crashAfterPersist && restartAfterCommit) {
+    throw new TypeError('crashAfterPersist and restartAfterCommit require separate runs');
+  }
   if (secretRotation) {
     keyFromSecret(previousSecret);
     keyFromSecret(retiredSecret);
@@ -57,14 +64,18 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, restartAfterCommit };
+    outOfOrderStateTransitions, secretRotation, restartAfterCommit, crashAfterPersist };
 }
 
 export async function runLab(config, { secret, previousSecret, retiredSecret,
-  restartReceiver, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
+  restartReceiver, recoverReceiver, request = fetch,
+  clock = () => Math.floor(Date.now() / 1000) } = {}) {
   const options = checkOptions(config, secret, previousSecret, retiredSecret);
   if (options.restartAfterCommit && typeof restartReceiver !== 'function') {
     throw new TypeError('restartReceiver must be a local process-controller function');
+  }
+  if (options.crashAfterPersist && typeof recoverReceiver !== 'function') {
+    throw new TypeError('recoverReceiver must be a local crashed-process recovery function');
   }
   const reports = [];
   const timeout = () => AbortSignal.timeout(options.timeoutMs);
@@ -310,6 +321,54 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         receiverInstanceIds.every((value) => typeof value === 'string' && value.length > 0) &&
         receiverInstanceIds[0] !== receiverInstanceIds[1],
       httpStatuses, observedCounts, receiverInstanceIds, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.crashAfterPersist) {
+    const beforeCrash = await observeState();
+    const crashId = `wfl_crash_${randomUUID().replaceAll('-', '')}`;
+    const crashBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: crashId } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': crashId,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id: crashId, timestamp: now, body: crashBody }) };
+    // Test-owned receiver persists its effect and dedupe record, then exits without an HTTP reply.
+    let firstAttemptOutcome;
+    try {
+      const first = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { ...headers, 'x-wfl-test-fault': 'persist-then-crash-before-ack' },
+        body: crashBody,
+      });
+      firstAttemptOutcome = `http_${first.status}`;
+    } catch {
+      firstAttemptOutcome = 'transport_error';
+    }
+
+    // Caller must witness termination and launch a new local OS process; no arbitrary shell commands.
+    const recovered = await recoverReceiver();
+    const recoveredEndpoint = requireLoopbackUrl(recovered?.endpoint, 'recoverReceiver endpoint');
+    const recoveredObserver = requireLoopbackUrl(recovered?.observer, 'recoverReceiver observer');
+    const afterRecovery = await observeState(undefined, recoveredObserver);
+    const retry = await request(recoveredEndpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: crashBody,
+    });
+    const afterRetry = await observeState(undefined, recoveredObserver);
+    const expectedProcessedCount = expectedCount + 1;
+    const observedCounts = [beforeCrash.processedCount, afterRecovery.processedCount,
+      afterRetry.processedCount];
+    const receiverInstanceIds = [beforeCrash.receiverInstanceId ?? null,
+      afterRecovery.receiverInstanceId ?? null];
+    reports.push({ scenario: 'crash_after_persist_before_ack',
+      passed: firstAttemptOutcome === 'transport_error' &&
+        retry.status === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        receiverInstanceIds.every((value) => typeof value === 'string' && value.length > 0) &&
+        receiverInstanceIds[0] !== receiverInstanceIds[1],
+      firstAttemptOutcome, retryHttpStatus: retry.status, observedCounts,
+      receiverInstanceIds, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
