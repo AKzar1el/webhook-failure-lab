@@ -52,13 +52,19 @@ Add `"lostAckAfterCommit": true` to local `lab.json` to simulate an **ambiguous,
 
 The scenario fails if the adapter ignores the fault (first response succeeds) or if the receiver commits an effect but loses the matching deduplication record (replay increments the count again). Both failure modes have negative fixtures in `tests/integration.test.mjs`. It can be combined with the concurrency and transient-retry options. Omitting it retains the default four checks. The header is an intentionally unsigned local test control; implement it **only in a synthetic development harness**, never a production webhook handler. A passing result demonstrates this in-process fixture and its supplied observer, **not** durable crash/restart recovery or independently verified exactly-once business effects.
 
+### Optional out-of-order dependent-event transition check
+
+Add `"outOfOrderStateTransitions": true` to local `lab.json` to test an explicit state machine, not merely a processed-count increment. Your **local development-only adapter** must recognize synthetic `test.resource.created` and `test.resource.activated` events sharing a `data.id` resource key. The harness sends a valid signed activation **before** the resource exists; the receiver must respond **409**, leave the observed count unchanged, and report resource state `missing`. It then sends the signed creation (HTTP `successStatus`, state `created`, count +1), followed by the **identical signed activation** previously rejected (HTTP `successStatus`, state `activated`, count +1).
+
+The local observer must support `GET /state?resourceId=<id>` and respond with `{ "processedCount": 3, "resourceState": "activated" }` (example values); valid resource states are `missing`, `created` and `activated`. If the observer does not report a state or the receiver lacks this contract adapter, the scenario fails rather than silently passing. A broken receiver that applies activation before creation, or incorrectly marks a rejected activation as already seen, is detected by the negative fixtures in `tests/integration.test.mjs`. This opt-in scenario composes with the other checks, remains loopback-only, and is **not** proof of ordered delivery from any provider, process-restart durability, or external exactly-once effects. Do not expose the synthetic event adapter or observer publicly.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent, or support cross-process exactly-once guarantees.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, and a committed event whose HTTP acknowledgement is lost. They do **not** prove cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, and a synthetic dependent-event state transition delivered out of order. They do **not** prove cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

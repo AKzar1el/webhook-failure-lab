@@ -4,10 +4,12 @@ import { verify } from './standard.mjs';
 export async function startMock({ secret, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
-  unsafeForgetLostAckDedupe = false } = {}) {
+  unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
+  unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false } = {}) {
   const seen = new Set();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
+  const resourceStates = new Map();
   let processedCount = 0;
   const pendingRaces = new Map();
   function rendezvous(id) {
@@ -33,7 +35,10 @@ export async function startMock({ secret, dedupe = true, verifySignatures = true
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/state') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ processedCount }));
+      const resourceId = url.searchParams.get('resourceId');
+      res.end(JSON.stringify({ processedCount,
+        ...(resourceId && supportOrderTransitions
+          ? { resourceState: resourceStates.get(resourceId) ?? 'missing' } : {}) }));
       return;
     }
     if (req.method !== 'POST' || url.pathname !== '/webhook') {
@@ -49,6 +54,34 @@ export async function startMock({ secret, dedupe = true, verifySignatures = true
     const accepted = verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'],
       tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY });
     if (verifySignatures && !accepted) { res.writeHead(401); res.end(); return; }
+    if (supportOrderTransitions && typeof id === 'string' && id.startsWith('wfl_order_')) {
+      let event;
+      try { event = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
+      const resourceId = event?.data?.id;
+      if (typeof resourceId !== 'string' || !resourceId.startsWith('wfl_resource_') ||
+          !['test.resource.created', 'test.resource.activated'].includes(event?.type)) {
+        res.writeHead(400); res.end(); return;
+      }
+      const state = resourceStates.get(resourceId) ?? 'missing';
+      if (seen.has(id)) { res.writeHead(200); res.end('accepted duplicate'); return; }
+      if (event.type === 'test.resource.activated' && state === 'missing') {
+        // Negative fixtures model two distinct precondition-handling bugs.
+        if (unsafeApplyOutOfOrder) {
+          resourceStates.set(resourceId, 'activated');
+          processedCount += 1;
+        }
+        if (unsafeMarkRejectedOrderSeen) seen.add(id);
+        res.writeHead(409); res.end('resource does not exist'); return;
+      }
+      if ((event.type === 'test.resource.created' && state !== 'missing') ||
+          (event.type === 'test.resource.activated' && state !== 'created')) {
+        res.writeHead(409); res.end('invalid state transition'); return;
+      }
+      resourceStates.set(resourceId, event.type === 'test.resource.created' ? 'created' : 'activated');
+      processedCount += 1;
+      seen.add(id);
+      res.writeHead(200); res.end('transition accepted'); return;
+    }
     if (supportRetryFault && req.headers['x-wfl-test-fault'] === 'reject-before-process-once' &&
         typeof id === 'string' && id.startsWith('wfl_retry_') && !failedRetryIds.has(id)) {
       failedRetryIds.add(id);

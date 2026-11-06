@@ -15,6 +15,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Concurrent copies of one freshly signed event (opt-in) | All acknowledged; observer count rises exactly once | Local integration test, plus deliberately non-atomic negative receiver fixture |
 | First delivery rejected with injected HTTP 503, then same signed event retried (opt-in) | First attempt leaves observer unchanged; retry succeeds and increments it once | Local integration test, plus fixture that marks rejected events as processed |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
+| Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -34,6 +35,18 @@ an HTTP response. The runner then retries the same signed event without the
 header; a second effect fails the check. An ignored fault header fails too.
 The reported transport error is not proof of a real process crash or of
 durable state across restarts. Never enable this adapter in production.
+Add `"outOfOrderStateTransitions": true` for a separate dependent-event
+contract. The local receiver must recognize the synthetic types
+`test.resource.created` and `test.resource.activated` with a shared
+`data.id`. It must return **409** without an effect for activation before
+creation, then accept creation, then accept a retry of the **same signed**
+activation. For this opt-in check, `GET /state?resourceId=<id>` must return
+the usual non-negative integer `processedCount` and a `resourceState` of
+`missing`, `created` or `activated`. The runner asserts both effects and
+states after each step. An absent adapter or missing state observation fails
+the check; it never claims generic receivers support these synthetic events.
+Two local broken fixtures show why a 409 must neither apply the premature
+transition nor mark the rejected message ID as already processed.
 
 The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
@@ -42,8 +55,6 @@ exactly-once delivery guarantee.
 
 ## Bounded next scenarios (not implemented yet)
 
-- Two dependent event types delivered out of order, with explicit state
-  transition assertions.
 - Receiver restart between processing and acknowledgement, with
   durable idempotency state supplied by a local fixture.
 - Secret rotation and dual-key acceptance, including negative coverage.
