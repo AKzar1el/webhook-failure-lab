@@ -58,13 +58,21 @@ Add `"outOfOrderStateTransitions": true` to local `lab.json` to test an explicit
 
 The local observer must support `GET /state?resourceId=<id>` and respond with `{ "processedCount": 3, "resourceState": "activated" }` (example values); valid resource states are `missing`, `created` and `activated`. If the observer does not report a state or the receiver lacks this contract adapter, the scenario fails rather than silently passing. A broken receiver that applies activation before creation, or incorrectly marks a rejected activation as already seen, is detected by the negative fixtures in `tests/integration.test.mjs`. This opt-in scenario composes with the other checks, remains loopback-only, and is **not** proof of ordered delivery from any provider, process-restart durability, or external exactly-once effects. Do not expose the synthetic event adapter or observer publicly.
 
+### Optional signing-key rotation grace and retirement check
+
+Add `"secretRotation": true` to the local configuration and supply **three distinct, synthetic Standard Webhooks keys** as environment variables: `WFL_SECRET` (current), `WFL_PREVIOUS_SECRET` (previous key still accepted during the configured grace period), and `WFL_RETIRED_SECRET` (revoked key that must no longer be accepted). Never put these secrets in `lab.json` or Git. This check requires a local receiver configured to accept the current and previous keys but reject the retired key. All three secrets are validated before sending any HTTP requests.
+
+The runner delivers a new, valid event signed with the previous key and requires `successStatus` plus exactly one committed effect. It then delivers a **different event** signed by the retired key and requires a configured 4xx rejection with **no additional effect**. Built-in negative fixtures demonstrate detection of an unexpectedly rejected previous key, an accepted retired key, and a rejected retired key that nevertheless commits an effect. No raw key or signature is included in the result JSON. The option composes with existing scenarios and has no effect when omitted.
+
+This is an explicit key-acceptance contract **at one moment**, not a test of clock-based rotation schedules, key storage, real provider signing, or cross-process durability. No production webhooks or credentials should be used.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent, or support cross-process exactly-once guarantees.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, and a synthetic dependent-event state transition delivered out of order. They do **not** prove cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, and signing-key acceptance during an explicit rotation grace/retirement state. They do **not** prove cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

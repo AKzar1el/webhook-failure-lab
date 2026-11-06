@@ -9,7 +9,8 @@ async function main() {
   }
   try {
     const config = JSON.parse(await readFile(process.argv[3], 'utf8'));
-    const result = await runLab(config, { secret: process.env.WFL_SECRET });
+    const result = await runLab(config, { secret: process.env.WFL_SECRET,
+      previousSecret: process.env.WFL_PREVIOUS_SECRET, retiredSecret: process.env.WFL_RETIRED_SECRET });
     console.log(JSON.stringify(result, null, 2));
     return result.success ? 0 : 1;
   } catch (error) {

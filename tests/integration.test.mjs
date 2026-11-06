@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { runLab } from '../src/run.mjs';
 import { startMock } from '../src/mock.mjs';
 
+const execFileAsync = promisify(execFile);
 const secret = `whsec_${randomBytes(32).toString('base64')}`;
+const previousSecret = `whsec_${randomBytes(32).toString('base64')}`;
+const retiredSecret = `whsec_${randomBytes(32).toString('base64')}`;
 
 async function withServer(options, fn) {
   const server = await startMock({ secret, ...options });
@@ -288,4 +297,115 @@ test('out-of-order scenario composes with other optional checks without reusing 
     assert.deepEqual(order.observedResourceStates, ['missing', 'created', 'activated']);
     assert.deepEqual(order.observedCounts, [4, 5, 6]);
   });
+});
+
+test('opt-in rotation accepts the previous signing key but rejects a retired one without an effect', async () => {
+  await withServer({ previousSecret }, async (config) => {
+    const result = await runLab({ ...config, secretRotation: true },
+      { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const rotation = result.scenarios.at(-1);
+    assert.equal(rotation.scenario, 'secret_rotation_grace_and_retirement');
+    assert.equal(rotation.passed, true);
+    assert.deepEqual(rotation.httpStatuses, [200, 401]);
+    assert.deepEqual(rotation.observedCounts, [2, 2]);
+    assert.equal(rotation.expectedProcessedCount, 2);
+    assert.ok(!JSON.stringify(result).includes(previousSecret.slice(6)));
+    assert.ok(!JSON.stringify(result).includes(retiredSecret.slice(6)));
+  });
+});
+
+test('rotation check catches an incorrectly rejected previous key in its grace window', async () => {
+  await withServer({ previousSecret, unsafeRejectPreviousSecret: true }, async (config) => {
+    const result = await runLab({ ...config, secretRotation: true },
+      { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const rotation = result.scenarios.at(-1);
+    assert.deepEqual(rotation.httpStatuses, [401, 401]);
+    assert.deepEqual(rotation.observedCounts, [1, 1]);
+    assert.equal(rotation.expectedProcessedCount, 2);
+  });
+});
+
+test('rotation check catches a receiver that still accepts the retired key', async () => {
+  await withServer({ previousSecret, retiredSecret, unsafeAcceptRetiredSecret: true }, async (config) => {
+    const result = await runLab({ ...config, secretRotation: true },
+      { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, false);
+    const rotation = result.scenarios.at(-1);
+    assert.deepEqual(rotation.httpStatuses, [200, 200]);
+    assert.deepEqual(rotation.observedCounts, [2, 3]);
+    assert.equal(rotation.expectedProcessedCount, 2);
+  });
+});
+
+test('rotation check catches a rejected retired key that secretly commits an effect', async () => {
+  await withServer({ previousSecret, retiredSecret, unsafeProcessRetiredBeforeReject: true },
+    async (config) => {
+      const result = await runLab({ ...config, secretRotation: true },
+        { secret, previousSecret, retiredSecret });
+      assert.equal(result.success, false);
+      const rotation = result.scenarios.at(-1);
+      assert.deepEqual(rotation.httpStatuses, [200, 401]);
+      assert.deepEqual(rotation.observedCounts, [2, 3]);
+    });
+});
+
+test('rotation opt-in validates three distinct well-formed keys before any request', async () => {
+  await withServer({ previousSecret }, async (config) => {
+    for (const secretRotation of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, secretRotation },
+        { secret, previousSecret, retiredSecret }), /secretRotation/);
+    }
+    for (const keys of [
+      { previousSecret: undefined, retiredSecret },
+      { previousSecret, retiredSecret: undefined },
+      { previousSecret: secret, retiredSecret },
+      { previousSecret, retiredSecret: previousSecret },
+      { previousSecret: 'whsec_broken', retiredSecret },
+    ]) {
+      await assert.rejects(() => runLab({ ...config, secretRotation: true },
+        { secret, ...keys }), /rotation|secret|key/i);
+    }
+  });
+});
+
+test('rotation composes with the other optional scenarios without sharing event IDs', async () => {
+  await withServer({ previousSecret }, async (config) => {
+    const result = await runLab({
+      ...config, concurrentDuplicateDeliveries: 4, retryAfterTransientFailure: true,
+      lostAckAfterCommit: true, outOfOrderStateTransitions: true, secretRotation: true,
+    }, { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 9);
+    const rotation = result.scenarios.at(-1);
+    assert.deepEqual(rotation.httpStatuses, [200, 401]);
+    assert.deepEqual(rotation.observedCounts, [7, 7]);
+    assert.equal(rotation.expectedProcessedCount, 7);
+  });
+});
+
+test('CLI reads rotation keys from the environment and returns only non-secret results', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-rotation-'));
+  const server = await startMock({ secret, previousSecret });
+  try {
+    const path = join(directory, 'lab.json');
+    await writeFile(path, JSON.stringify({ ...server.config, secretRotation: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', path],
+      { env: { ...process.env, WFL_SECRET: secret,
+        WFL_PREVIOUS_SECRET: previousSecret, WFL_RETIRED_SECRET: retiredSecret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'secret_rotation_grace_and_retirement');
+    for (const signingSecret of [secret, previousSecret, retiredSecret]) {
+      assert.ok(!stdout.includes(signingSecret));
+      assert.ok(!stdout.includes(signingSecret.slice(6)));
+    }
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
 });

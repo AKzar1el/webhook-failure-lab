@@ -4,7 +4,7 @@ import { keyFromSecret, sign } from './standard.mjs';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
-function checkOptions(config, secret) {
+function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('Config must be an object');
   }
@@ -40,13 +40,25 @@ function checkOptions(config, secret) {
   if (outOfOrderStateTransitions !== undefined && typeof outOfOrderStateTransitions !== 'boolean') {
     throw new TypeError('outOfOrderStateTransitions must be a boolean');
   }
+  const secretRotation = config.secretRotation;
+  if (secretRotation !== undefined && typeof secretRotation !== 'boolean') {
+    throw new TypeError('secretRotation must be a boolean');
+  }
+  if (secretRotation) {
+    keyFromSecret(previousSecret);
+    keyFromSecret(retiredSecret);
+    if (new Set([secret, previousSecret, retiredSecret]).size !== 3) {
+      throw new TypeError('Rotation requires three distinct signing keys');
+    }
+  }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions };
+    outOfOrderStateTransitions, secretRotation };
 }
 
-export async function runLab(config, { secret, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
-  const options = checkOptions(config, secret);
+export async function runLab(config, { secret, previousSecret, retiredSecret,
+  request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
+  const options = checkOptions(config, secret, previousSecret, retiredSecret);
   const reports = [];
   const timeout = () => AbortSignal.timeout(options.timeoutMs);
   const observeState = async (resourceId) => {
@@ -223,6 +235,37 @@ export async function runLab(config, { secret, request = fetch, clock = () => Ma
         observedResourceStates[1] === 'created' &&
         observedResourceStates[2] === 'activated',
       httpStatuses, observedCounts, observedResourceStates, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.secretRotation) {
+    const makeRotationEvent = (name, signingSecret) => {
+      const messageId = `wfl_rotation_${name}_${randomUUID().replaceAll('-', '')}`;
+      const rawBody = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(), data: { id: messageId } });
+      return { rawBody, headers: {
+        'content-type': 'application/json', 'webhook-id': messageId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret: signingSecret, id: messageId, timestamp: now, body: rawBody }),
+      } };
+    };
+    const send = (event) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: event.headers, body: event.rawBody,
+    });
+    const previous = await send(makeRotationEvent('previous', previousSecret));
+    const countAfterPrevious = await observe();
+    const retired = await send(makeRotationEvent('retired', retiredSecret));
+    const countAfterRetired = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [previous.status, retired.status];
+    const observedCounts = [countAfterPrevious, countAfterRetired];
+    reports.push({ scenario: 'secret_rotation_grace_and_retirement',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts[0] === expectedProcessedCount &&
+        observedCounts[1] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

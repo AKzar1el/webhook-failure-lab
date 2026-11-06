@@ -16,6 +16,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | First delivery rejected with injected HTTP 503, then same signed event retried (opt-in) | First attempt leaves observer unchanged; retry succeeds and increments it once | Local integration test, plus fixture that marks rejected events as processed |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
+| Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -47,6 +48,15 @@ states after each step. An absent adapter or missing state observation fails
 the check; it never claims generic receivers support these synthetic events.
 Two local broken fixtures show why a 409 must neither apply the premature
 transition nor mark the rejected message ID as already processed.
+Add `"secretRotation": true` for a separate signing-key acceptance contract.
+Set `WFL_SECRET`, `WFL_PREVIOUS_SECRET` and `WFL_RETIRED_SECRET` to three
+distinct **synthetic** `whsec_` keys; do not place raw keys in configuration or
+version control. The local receiver must accept the current/previous keys and
+reject the retired key. The runner signs two independent events with previous
+and retired keys respectively, asserting the 2xx/4xx outcomes and both observer
+counts. It does not simulate a timed grace window or prove key persistence
+across process restarts. The CLI validates all key formats and uniqueness
+before any requests when this option is enabled.
 
 The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
@@ -57,7 +67,6 @@ exactly-once delivery guarantee.
 
 - Receiver restart between processing and acknowledgement, with
   durable idempotency state supplied by a local fixture.
-- Secret rotation and dual-key acceptance, including negative coverage.
 - Idempotency retention boundary expiry, scoped to a documented time window.
 
 Each new scenario must include a fixture proving the test detects a
