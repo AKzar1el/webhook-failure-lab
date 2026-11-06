@@ -19,6 +19,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
 | Real local receiver restart after committing a signed event (programmatic opt-in) | First delivery commits once; an independently restarted child process retains the observer count and deduplication record; identical signed retry does not commit twice | Local child-process integration fixture with atomic disk-state replacement, lost-dedupe negative fixture, no-op restart negative fixture |
 | Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
+| Declared deduplication retention boundary and stale signed replay (programmatic opt-in) | Exact duplicate one second before retention expiry must not reprocess; unchanged signature at +301 seconds must be rejected without effect | Synthetic clock, premature-eviction and stale-replay acceptance broken receivers, no-op-clock negative fixture |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -103,6 +104,23 @@ process-exit recovery**, not power-loss durability, an fsync guarantee, a crash
 during a multi-write transaction, or proof of external exactly-once effects.
 Both controller and observer remain caller-supplied evidence.
 
+Use `retentionWindowSeconds: 60` (integer 2-240) **only** with
+`runLab(config, { secret, advanceReceiverTime })`. A caller-owned callback
+advances the clock of a synthetic local test receiver by the requested
+seconds; the harness does not change the machine clock or wait in real time.
+The scenario accepts a fresh signed event, replays it at `window - 1` seconds
+(same signature; accepted with no additional effect), then replays the unchanged
+signed event at +301 seconds (4xx rejection and no effect). The mock receiver
+uses a 60-second synthetic dedupe retention, with negative variants that expire
+the key too early or treat stale previously accepted messages as valid after
+eviction. The callback is required before network requests, and a no-op clock
+controller fails the stale-replay assertion. The JSON CLI lacks this controller
+and fails closed if configured with this option. Run separately from restart
+and crash tests. The check forbids reprocessing **within** the declared
+retention window; it does not prescribe behavior for newly signed events
+after that window. Retention longer than the declared minimum is allowed. This is not a proof
+of provider timestamp behavior or external exactly-once side effects.
+
 The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
@@ -112,7 +130,8 @@ exactly-once delivery guarantee.
 
 - Torn multi-write database transaction and power-loss/fsync durability
   (not established by post-rename process exit).
-- Idempotency retention boundary expiry, scoped to a documented time window.
+- Real-time retention expiry under scheduling and delayed delivery (synthetic
+  receiver-clock control only is tested).
 
 Each new scenario must include a fixture proving the test detects a
 deliberately broken receiver, not merely that the happy path passes.

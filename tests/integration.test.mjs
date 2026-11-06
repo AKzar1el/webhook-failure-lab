@@ -652,3 +652,76 @@ test('crash recovery controller cannot return a non-loopback destination', async
       }) }), /loopback/i);
   });
 });
+
+async function withRetentionReceiver(options, fn) {
+  let receiverNow = Math.floor(Date.now() / 1000);
+  const server = await startMock({ secret, clock: () => receiverNow,
+    dedupeRetentionSeconds: 60, ...options });
+  const advanceReceiverTime = async (seconds) => { receiverNow += seconds; };
+  try {
+    return await fn(server.config, { advanceReceiverTime, clock: () => receiverNow });
+  } finally {
+    await server.stop();
+  }
+}
+
+test('opt-in retention check protects duplicates just before TTL and rejects stale replay after expiry', async () => {
+  await withRetentionReceiver({}, async (config, callbacks) => {
+    const result = await runLab({ ...config, retentionWindowSeconds: 60 },
+      { secret, ...callbacks });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const retention = result.scenarios.at(-1);
+    assert.equal(retention.scenario, 'retention_boundary_stale_replay');
+    assert.deepEqual(retention.httpStatuses, [200, 200, 401]);
+    assert.deepEqual(retention.observedCounts, [2, 2, 2]);
+    assert.equal(retention.expectedProcessedCount, 2);
+    assert.equal(retention.passed, true);
+  });
+});
+
+test('retention check detects a broken receiver that evicts dedupe keys before the declared window', async () => {
+  await withRetentionReceiver({ unsafePrematureRetentionEviction: true }, async (config, callbacks) => {
+    const result = await runLab({ ...config, retentionWindowSeconds: 60 },
+      { secret, ...callbacks });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const retention = result.scenarios.at(-1);
+    assert.deepEqual(retention.httpStatuses, [200, 200, 401]);
+    assert.deepEqual(retention.observedCounts, [2, 3, 3]);
+    assert.equal(retention.expectedProcessedCount, 2);
+  });
+});
+
+test('retention check detects a previously accepted event replayed with a stale signature', async () => {
+  await withRetentionReceiver({ unsafeAcceptExpiredReplay: true }, async (config, callbacks) => {
+    const result = await runLab({ ...config, retentionWindowSeconds: 60 },
+      { secret, ...callbacks });
+    assert.equal(result.success, false);
+    const retention = result.scenarios.at(-1);
+    assert.deepEqual(retention.httpStatuses, [200, 200, 200]);
+    assert.deepEqual(retention.observedCounts, [2, 2, 3]);
+    assert.equal(retention.expectedProcessedCount, 2);
+  });
+});
+
+test('retention check rejects a time controller that never advances receiver time', async () => {
+  await withRetentionReceiver({}, async (config, { clock }) => {
+    const result = await runLab({ ...config, retentionWindowSeconds: 60 },
+      { secret, clock, advanceReceiverTime: async () => {} });
+    assert.equal(result.success, false);
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 200, 200]);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 2, 2]);
+  });
+});
+
+test('retention option and fake-time controller are validated before any requests', async () => {
+  await withServer({}, async (config) => {
+    for (const retentionWindowSeconds of [0, 1, 241, -1, 30.5, '60', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, retentionWindowSeconds },
+        { secret, advanceReceiverTime: async () => {} }), /retentionWindowSeconds/);
+    }
+    await assert.rejects(() => runLab({ ...config, retentionWindowSeconds: 60 },
+      { secret }), /advanceReceiverTime/);
+  });
+});
