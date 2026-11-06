@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,70 @@ async function withServer(options, fn) {
   const server = await startMock({ secret, ...options });
   try { return await fn(server.config); }
   finally { await server.stop(); }
+}
+
+function launchRestartReceiver(statePath, { forgetDedupe = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = fork(fileURLToPath(new URL('./fixtures/restart-receiver.mjs', import.meta.url)),
+      [], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+        env: { ...process.env, WFL_TEST_STATE_PATH: statePath, WFL_TEST_SECRET: secret,
+          WFL_TEST_FORGET_DEDUPE: forgetDedupe ? '1' : '0' } });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString().slice(0, 1000); });
+    const timer = setTimeout(() => finish(new Error('Local receiver startup timed out')), 4000);
+    const onExit = (code) => finish(new Error(`Local receiver exited ${code}: ${stderr}`));
+    const onError = (error) => finish(error);
+    const onReady = (message) => {
+      if (message?.type !== 'ready' || !message.config) {
+        finish(new Error('Local receiver returned invalid readiness IPC'));
+        return;
+      }
+      finish(null, { child, config: message.config });
+    };
+    function finish(error, result) {
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('error', onError);
+      child.off('message', onReady);
+      if (error) { child.kill(); reject(error); }
+      else resolve(result);
+    }
+    child.once('exit', onExit);
+    child.once('error', onError);
+    child.once('message', onReady);
+  });
+}
+
+async function stopRestartReceiver(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Receiver shutdown timeout')); }, 4000);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+    child.send({ type: 'shutdown' }, (error) => {
+      if (error) { clearTimeout(timer); reject(error); }
+    });
+  });
+}
+
+async function withRestartReceiver({ forgetDedupeOnRestart = false } = {}, fn) {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-restart-'));
+  const statePath = join(directory, 'durable.json');
+  let live;
+  try {
+    live = await launchRestartReceiver(statePath);
+    const config = live.config;
+    const restartReceiver = async () => {
+      const previousPid = live.child.pid;
+      await stopRestartReceiver(live.child);
+      live = await launchRestartReceiver(statePath, { forgetDedupe: forgetDedupeOnRestart });
+      assert.notEqual(live.child.pid, previousPid, 'Restart must use a different OS process');
+      return live.config;
+    };
+    return await fn(config, restartReceiver);
+  } finally {
+    if (live) await stopRestartReceiver(live.child);
+    await rm(directory, { recursive: true });
+  }
 }
 
 test('four scenarios pass with secure idempotent receiver', async () => {
@@ -408,4 +472,66 @@ test('CLI reads rotation keys from the environment and returns only non-secret r
     await server.stop();
     await rm(directory, { recursive: true });
   }
+});
+
+test('opt-in restart proves dedupe state persists across a real receiver process replacement', async () => {
+  await withRestartReceiver({}, async (config, restartReceiver) => {
+    const result = await runLab({ ...config, restartAfterCommit: true },
+      { secret, restartReceiver });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const restart = result.scenarios.at(-1);
+    assert.equal(restart.scenario, 'restart_preserves_idempotency');
+    assert.equal(restart.passed, true);
+    assert.deepEqual(restart.httpStatuses, [200, 200]);
+    assert.deepEqual(restart.observedCounts, [2, 2, 2]);
+    assert.notEqual(restart.receiverInstanceIds[0], restart.receiverInstanceIds[1]);
+    assert.equal(restart.expectedProcessedCount, 2);
+  });
+});
+
+test('restart regression detects a receiver that forgets dedupe keys but retains effect count', async () => {
+  await withRestartReceiver({ forgetDedupeOnRestart: true }, async (config, restartReceiver) => {
+    const result = await runLab({ ...config, restartAfterCommit: true },
+      { secret, restartReceiver });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const restart = result.scenarios.at(-1);
+    assert.equal(restart.scenario, 'restart_preserves_idempotency');
+    assert.deepEqual(restart.httpStatuses, [200, 200]);
+    assert.deepEqual(restart.observedCounts, [2, 2, 3]);
+    assert.equal(restart.expectedProcessedCount, 2);
+    assert.equal(restart.passed, false);
+  });
+});
+
+test('restart check rejects a no-op callback that never replaces the receiver instance', async () => {
+  await withRestartReceiver({}, async (config) => {
+    const result = await runLab({ ...config, restartAfterCommit: true },
+      { secret, restartReceiver: async () => config });
+    assert.equal(result.success, false);
+    const restart = result.scenarios.at(-1);
+    assert.deepEqual(restart.observedCounts, [2, 2, 2]);
+    assert.equal(restart.receiverInstanceIds[0], restart.receiverInstanceIds[1]);
+    assert.equal(restart.passed, false);
+  });
+});
+
+test('restart option requires an explicit local process controller before sending requests', async () => {
+  await withServer({}, async (config) => {
+    for (const restartAfterCommit of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, restartAfterCommit }, { secret }),
+        /restartAfterCommit/);
+    }
+    await assert.rejects(() => runLab({ ...config, restartAfterCommit: true }, { secret }),
+      /restartReceiver/);
+  });
+});
+
+test('restart controller may only return loopback HTTP endpoint and observer URLs', async () => {
+  await withRestartReceiver({}, async (config) => {
+    await assert.rejects(() => runLab({ ...config, restartAfterCommit: true },
+      { secret, restartReceiver: async () => ({ endpoint: 'https://example.com/webhook',
+        observer: config.observer }) }), /loopback/i);
+  });
 });

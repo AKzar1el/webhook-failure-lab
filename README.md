@@ -66,13 +66,41 @@ The runner delivers a new, valid event signed with the previous key and requires
 
 This is an explicit key-acceptance contract **at one moment**, not a test of clock-based rotation schedules, key storage, real provider signing, or cross-process durability. No production webhooks or credentials should be used.
 
+### Opt-in receiver-process restart and durable idempotency check
+
+Use `restartAfterCommit: true` with the **programmatic** `runLab` API and an
+explicit `restartReceiver` callback owned by your local test harness. This
+callback must shut down and await the original **local test receiver**, launch
+a fresh process using its persisted idempotency data, and return its new
+`{ endpoint, observer }` loopback URLs. The runner never executes a shell
+command or restarts an application by itself. The JSON CLI intentionally has
+**no process-controller capability**: configuring this flag in `lab.json`
+without a programmatic callback fails before sending any requests.
+
+The scenario sends a new valid signed event (one committed effect), reads the
+receiver's `processedCount` and nonempty `receiverInstanceId`, invokes the
+controller, then observes the replacement and retries the **exact same signed
+event**. It requires the receiver instance identifier to change and the count
+to stay unchanged through both restart and retry. A new instance with a lost
+deduplication record fails even when its previous count was preserved. The
+regression suite actually starts and stops separate Node child processes and
+persists the synthetic receiver's count plus deduplication keys to a temporary
+local file **before** HTTP acknowledgement. It also rejects a no-op restart
+callback and remote endpoints returned by a controller.
+
+This is a controlled graceful-restart contract, not a simulated sudden process
+crash between disk writes, a proof of external database transactions or a
+verified exactly-once business-side-effect guarantee. Both the count and
+instance identifier are self-reported by the receiver. Keep process control,
+the observer endpoint, and all synthetic signing secrets local to your tests.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
-- The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent, or support cross-process exactly-once guarantees.
+- The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, and signing-key acceptance during an explicit rotation grace/retirement state. They do **not** prove cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, and one controlled receiver restart (programmatic API only). The restart fixture checks persistence across distinct local processes, **not** sudden-crash safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

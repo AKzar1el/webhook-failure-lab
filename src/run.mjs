@@ -44,6 +44,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (secretRotation !== undefined && typeof secretRotation !== 'boolean') {
     throw new TypeError('secretRotation must be a boolean');
   }
+  const restartAfterCommit = config.restartAfterCommit;
+  if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
+    throw new TypeError('restartAfterCommit must be a boolean');
+  }
   if (secretRotation) {
     keyFromSecret(previousSecret);
     keyFromSecret(retiredSecret);
@@ -53,16 +57,19 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation };
+    outOfOrderStateTransitions, secretRotation, restartAfterCommit };
 }
 
 export async function runLab(config, { secret, previousSecret, retiredSecret,
-  request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
+  restartReceiver, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
   const options = checkOptions(config, secret, previousSecret, retiredSecret);
+  if (options.restartAfterCommit && typeof restartReceiver !== 'function') {
+    throw new TypeError('restartReceiver must be a local process-controller function');
+  }
   const reports = [];
   const timeout = () => AbortSignal.timeout(options.timeoutMs);
-  const observeState = async (resourceId) => {
-    const target = new URL(options.observer);
+  const observeState = async (resourceId, observerUrl = options.observer) => {
+    const target = new URL(observerUrl);
     if (resourceId !== undefined) target.searchParams.set('resourceId', resourceId);
     const response = await request(target, { method: 'GET', redirect: 'manual', signal: timeout() });
     if (response.status !== 200) throw new Error(`Observer returned HTTP ${response.status}`);
@@ -266,6 +273,43 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts[0] === expectedProcessedCount &&
         observedCounts[1] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.restartAfterCommit) {
+    const restartId = `wfl_restart_${randomUUID().replaceAll('-', '')}`;
+    const restartBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: restartId } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': restartId,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id: restartId, timestamp: now, body: restartBody }) };
+    const first = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: restartBody,
+    });
+    const afterCommit = await observeState();
+
+    // The caller controls only a local test receiver; never run an arbitrary restart command.
+    const restarted = await restartReceiver();
+    const restartedEndpoint = requireLoopbackUrl(restarted?.endpoint, 'restartReceiver endpoint');
+    const restartedObserver = requireLoopbackUrl(restarted?.observer, 'restartReceiver observer');
+    const afterRestart = await observeState(undefined, restartedObserver);
+    const retry = await request(restartedEndpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: restartBody,
+    });
+    const afterRetry = await observeState(undefined, restartedObserver);
+
+    const expectedProcessedCount = expectedCount + 1;
+    const receiverInstanceIds = [afterCommit.receiverInstanceId ?? null,
+      afterRestart.receiverInstanceId ?? null];
+    const observedCounts = [afterCommit.processedCount, afterRestart.processedCount,
+      afterRetry.processedCount];
+    const httpStatuses = [first.status, retry.status];
+    reports.push({ scenario: 'restart_preserves_idempotency',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count) => count === expectedProcessedCount) &&
+        receiverInstanceIds.every((value) => typeof value === 'string' && value.length > 0) &&
+        receiverInstanceIds[0] !== receiverInstanceIds[1],
+      httpStatuses, observedCounts, receiverInstanceIds, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
