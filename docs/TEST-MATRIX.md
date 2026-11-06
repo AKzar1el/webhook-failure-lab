@@ -17,6 +17,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
+| Real local receiver restart after committing a signed event (programmatic opt-in) | First delivery commits once; an independently restarted child process retains the observer count and deduplication record; identical signed retry does not commit twice | Local child-process integration fixture with atomic disk-state replacement, lost-dedupe negative fixture, no-op restart negative fixture |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -58,6 +59,28 @@ counts. It does not simulate a timed grace window or prove key persistence
 across process restarts. The CLI validates all key formats and uniqueness
 before any requests when this option is enabled.
 
+Use `restartAfterCommit: true` only with the **programmatic** `runLab(config,
+{ secret, restartReceiver })` API. `restartReceiver` is an explicit caller-owned
+local process controller: it must terminate and await the original test receiver,
+launch a fresh receiver process backed by its own persisted idempotency state,
+then return the replacement's `{ endpoint, observer }` URLs. Both returned URLs
+must be plain-HTTP loopback. The runner sends a fresh signed event before
+restart, observes the committed count and `receiverInstanceId`, invokes the
+controller once, observes the replacement, and replays the **identical** signed
+event. Both HTTP responses must succeed; count must increase once total, survive
+restart unchanged, and remain unchanged after replay. Two different, nonempty
+observer-reported `receiverInstanceId` strings are required to detect a no-op
+controller. The fixture additionally checks that the OS child PID changed.
+The CLI has **no process-controller option**, so specifying this flag in
+`lab.json` without calling the programmatic API fails closed before requests.
+Tests spawn a synthetic child process and use a disposable local JSON state
+file written before acknowledgement; no real service is restarted. The negative
+fixture preserves the counter but forgets the dedupe set, exposing a second
+observed effect after restart. A passing test does not verify arbitrary
+database durability, actual crash-on-write behavior, or externally observable
+exactly-once side effects. The observer and instance identifier are supplied by
+the receiver and can be inaccurate.
+
 The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
@@ -65,8 +88,8 @@ exactly-once delivery guarantee.
 
 ## Bounded next scenarios (not implemented yet)
 
-- Receiver restart between processing and acknowledgement, with
-  durable idempotency state supplied by a local fixture.
+- Abrupt process crash between a durable write and acknowledgement, including
+  crash-consistent recovery (distinct from the controlled shutdown test).
 - Idempotency retention boundary expiry, scoped to a documented time window.
 
 Each new scenario must include a fixture proving the test detects a
