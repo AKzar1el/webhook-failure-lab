@@ -84,3 +84,68 @@ test('concurrent duplicate delivery count must be an integer between two and eig
     }
   });
 });
+
+test('opt-in transient failure retries the same signed delivery once and commits only on success', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, retryAfterTransientFailure: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const retry = result.scenarios.find((r) => r.scenario === 'retry_after_transient_failure');
+    assert.equal(retry.passed, true);
+    assert.deepEqual(retry.httpStatuses, [503, 200]);
+    assert.equal(retry.observedCountAfterFailure, 1);
+    assert.equal(retry.observedProcessedCount, 2);
+    assert.equal(retry.expectedProcessedCount, 2);
+  });
+});
+
+test('retry check catches a receiver that marks a failed delivery as already processed', async () => {
+  await withServer({ unsafeMarkFailedRetrySeen: true }, async (config) => {
+    const result = await runLab({ ...config, retryAfterTransientFailure: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const retry = result.scenarios.find((r) => r.scenario === 'retry_after_transient_failure');
+    assert.equal(retry.passed, false);
+    assert.deepEqual(retry.httpStatuses, [503, 200]);
+    assert.equal(retry.observedCountAfterFailure, 1);
+    assert.equal(retry.observedProcessedCount, 1);
+    assert.equal(retry.expectedProcessedCount, 2);
+  });
+});
+
+test('retry check rejects a receiver that ignores the explicit local fault injection', async () => {
+  await withServer({ supportRetryFault: false }, async (config) => {
+    const result = await runLab({ ...config, retryAfterTransientFailure: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const retry = result.scenarios.find((r) => r.scenario === 'retry_after_transient_failure');
+    assert.equal(retry.passed, false);
+    assert.deepEqual(retry.httpStatuses, [200, 200]);
+    assert.equal(retry.observedProcessedCount, 2);
+  });
+});
+
+test('retry scenario requires a boolean opt-in before sending any request', async () => {
+  await withServer({}, async (config) => {
+    for (const retryAfterTransientFailure of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, retryAfterTransientFailure }, { secret }),
+        /retryAfterTransientFailure/);
+    }
+  });
+});
+
+test('retry check composes with concurrent duplicates without reusing an event ID', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({
+      ...config, concurrentDuplicateDeliveries: 4, retryAfterTransientFailure: true,
+    }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 6);
+    const retry = result.scenarios.at(-1);
+    assert.equal(retry.scenario, 'retry_after_transient_failure');
+    assert.equal(retry.expectedCountAfterFailure, 2);
+    assert.equal(retry.observedCountAfterFailure, 2);
+    assert.equal(retry.expectedProcessedCount, 3);
+    assert.equal(retry.observedProcessedCount, 3);
+  });
+});

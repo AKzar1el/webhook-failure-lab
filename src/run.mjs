@@ -28,7 +28,12 @@ function checkOptions(config, secret) {
        concurrentDuplicateDeliveries < 2 || concurrentDuplicateDeliveries > 8)) {
     throw new TypeError('concurrentDuplicateDeliveries must be an integer between 2 and 8');
   }
-  return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs, concurrentDuplicateDeliveries };
+  const retryAfterTransientFailure = config.retryAfterTransientFailure;
+  if (retryAfterTransientFailure !== undefined && typeof retryAfterTransientFailure !== 'boolean') {
+    throw new TypeError('retryAfterTransientFailure must be a boolean');
+  }
+  return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
+    concurrentDuplicateDeliveries, retryAfterTransientFailure };
 }
 
 export async function runLab(config, { secret, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
@@ -101,6 +106,33 @@ export async function runLab(config, { secret, request = fetch, clock = () => Ma
       passed: httpStatuses.every((status) => status === options.successStatus) &&
         count === expectedProcessedCount,
       httpStatuses, observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.retryAfterTransientFailure) {
+    const retryId = `wfl_retry_${randomUUID().replaceAll('-', '')}`;
+    const retryBody = JSON.stringify({ type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: retryId } });
+    const retrySignature = sign({ secret, id: retryId, timestamp: now, body: retryBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': retryId,
+      'webhook-timestamp': String(now), 'webhook-signature': retrySignature };
+    // A local test adapter must deliberately fail before processing the first valid delivery.
+    const first = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { ...headers, 'x-wfl-test-fault': 'reject-before-process-once' }, body: retryBody,
+    });
+    const observedCountAfterFailure = await observe();
+    const second = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: retryBody,
+    });
+    const count = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    reports.push({ scenario: 'retry_after_transient_failure',
+      passed: first.status === 503 && observedCountAfterFailure === expectedCount &&
+        second.status === options.successStatus && count === expectedProcessedCount,
+      httpStatuses: [first.status, second.status], observedCountAfterFailure,
+      expectedCountAfterFailure: expectedCount, observedProcessedCount: count,
+      expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

@@ -40,13 +40,19 @@ Add `"concurrentDuplicateDeliveries": 4` to the local `lab.json` config to also 
 
 This detects some non-atomic read/check/write idempotency races that ordinary sequential duplicate tests miss. A deliberately broken, local-only receiver fixture is covered in `tests/integration.test.mjs`, along with a passing secure receiver. Concurrent observation still does **not** establish an exactly-once business-side-effect guarantee; it depends on the receiver's observer accurately reporting committed effects.
 
+### Optional deterministic transient-failure retry check
+
+Add `"retryAfterTransientFailure": true` to `lab.json` to enable a fifth check (or a sixth if the concurrent check is also enabled). This requires an **explicit, development-only fault-injection adapter** in your local receiver. The lab sends a fresh, valid signed event with header `x-wfl-test-fault: reject-before-process-once`. The adapter must return **HTTP 503 without committing the event**; the observer count must remain unchanged. The lab then retries the **same event ID, raw body, timestamp, and signature** without the injection header. The receiver must return `successStatus` and commit exactly one observed effect. A receiver that marks an event as processed before returning 503 will fail the retry count assertion.
+
+This check is opt-in because ordinary webhook handlers will not understand that injection header. If your handler ignores it, the lab reports a failed first-attempt status rather than silently claiming retry coverage. The built-in loopback fixture implements the adapter; its deliberately broken variant is tested in `tests/integration.test.mjs`. **Never enable fault injection on public or production handlers.** This is a controlled failed-before-processing retry, not an automatic retry scheduler, lost-acknowledgement simulation, crash-recovery proof, or exactly-once guarantee.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent, or support cross-process exactly-once guarantees.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in check covers concurrent duplicate delivery, not cross-process or crash-safe idempotency. This MVP does not support queued retries, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
+- The opt-in checks cover concurrent duplicate delivery and one injected transient-failure retry, not cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

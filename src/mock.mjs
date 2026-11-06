@@ -2,8 +2,10 @@ import { createServer } from 'node:http';
 import { verify } from './standard.mjs';
 
 export async function startMock({ secret, dedupe = true, verifySignatures = true,
-  verifyFreshness = true, unsafeConcurrentDedupe = false } = {}) {
+  verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
+  unsafeMarkFailedRetrySeen = false } = {}) {
   const seen = new Set();
+  const failedRetryIds = new Set();
   let processedCount = 0;
   const pendingRaces = new Map();
   function rendezvous(id) {
@@ -45,6 +47,13 @@ export async function startMock({ secret, dedupe = true, verifySignatures = true
     const accepted = verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'],
       tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY });
     if (verifySignatures && !accepted) { res.writeHead(401); res.end(); return; }
+    if (supportRetryFault && req.headers['x-wfl-test-fault'] === 'reject-before-process-once' &&
+        typeof id === 'string' && id.startsWith('wfl_retry_') && !failedRetryIds.has(id)) {
+      failedRetryIds.add(id);
+      // Broken fixture marks an event as handled even though it rejected the delivery.
+      if (unsafeMarkFailedRetrySeen) seen.add(id);
+      res.writeHead(503); res.end('synthetic pre-processing failure'); return;
+    }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {
       // Broken fixture: every concurrent request reads state before any write.
