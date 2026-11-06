@@ -3,9 +3,11 @@ import { verify } from './standard.mjs';
 
 export async function startMock({ secret, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
-  unsafeMarkFailedRetrySeen = false } = {}) {
+  unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
+  unsafeForgetLostAckDedupe = false } = {}) {
   const seen = new Set();
   const failedRetryIds = new Set();
+  const lostAckIds = new Set();
   let processedCount = 0;
   const pendingRaces = new Map();
   function rendezvous(id) {
@@ -53,6 +55,17 @@ export async function startMock({ secret, dedupe = true, verifySignatures = true
       // Broken fixture marks an event as handled even though it rejected the delivery.
       if (unsafeMarkFailedRetrySeen) seen.add(id);
       res.writeHead(503); res.end('synthetic pre-processing failure'); return;
+    }
+    if (supportLostAckFault && req.headers['x-wfl-test-fault'] === 'commit-then-drop-ack-once' &&
+        typeof id === 'string' && id.startsWith('wfl_lostack_') && !lostAckIds.has(id)) {
+      lostAckIds.add(id);
+      if (!seen.has(id)) {
+        processedCount += 1;
+        // Broken fixture commits the effect but loses the corresponding dedupe record.
+        if (!unsafeForgetLostAckDedupe) seen.add(id);
+      }
+      res.destroy();
+      return;
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {

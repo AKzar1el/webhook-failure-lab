@@ -46,13 +46,19 @@ Add `"retryAfterTransientFailure": true` to `lab.json` to enable a fifth check (
 
 This check is opt-in because ordinary webhook handlers will not understand that injection header. If your handler ignores it, the lab reports a failed first-attempt status rather than silently claiming retry coverage. The built-in loopback fixture implements the adapter; its deliberately broken variant is tested in `tests/integration.test.mjs`. **Never enable fault injection on public or production handlers.** This is a controlled failed-before-processing retry, not an automatic retry scheduler, lost-acknowledgement simulation, crash-recovery proof, or exactly-once guarantee.
 
+### Optional lost acknowledgement after commit
+
+Add `"lostAckAfterCommit": true` to local `lab.json` to simulate an **ambiguous, already-committed delivery**. This requires a separate, **development-only local adapter**: for a fresh, correctly signed event with `x-wfl-test-fault: commit-then-drop-ack-once`, the receiver must record one effect and its idempotency key, then close the HTTP connection **without sending a response**. The harness expects a transport error and observes the committed count increase by one. It then retries the **identical event ID, body, timestamp, and signature**, without the fault header, and requires an accepted response **without any second observed effect**.
+
+The scenario fails if the adapter ignores the fault (first response succeeds) or if the receiver commits an effect but loses the matching deduplication record (replay increments the count again). Both failure modes have negative fixtures in `tests/integration.test.mjs`. It can be combined with the concurrency and transient-retry options. Omitting it retains the default four checks. The header is an intentionally unsigned local test control; implement it **only in a synthetic development harness**, never a production webhook handler. A passing result demonstrates this in-process fixture and its supplied observer, **not** durable crash/restart recovery or independently verified exactly-once business effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent, or support cross-process exactly-once guarantees.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery and one injected transient-failure retry, not cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, and a committed event whose HTTP acknowledgement is lost. They do **not** prove cross-process or crash-safe idempotency. This MVP does not support queued retry schedules/backoff, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

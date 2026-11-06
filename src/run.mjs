@@ -32,8 +32,12 @@ function checkOptions(config, secret) {
   if (retryAfterTransientFailure !== undefined && typeof retryAfterTransientFailure !== 'boolean') {
     throw new TypeError('retryAfterTransientFailure must be a boolean');
   }
+  const lostAckAfterCommit = config.lostAckAfterCommit;
+  if (lostAckAfterCommit !== undefined && typeof lostAckAfterCommit !== 'boolean') {
+    throw new TypeError('lostAckAfterCommit must be a boolean');
+  }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
-    concurrentDuplicateDeliveries, retryAfterTransientFailure };
+    concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit };
 }
 
 export async function runLab(config, { secret, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
@@ -133,6 +137,39 @@ export async function runLab(config, { secret, request = fetch, clock = () => Ma
       httpStatuses: [first.status, second.status], observedCountAfterFailure,
       expectedCountAfterFailure: expectedCount, observedProcessedCount: count,
       expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.lostAckAfterCommit) {
+    const lostAckId = `wfl_lostack_${randomUUID().replaceAll('-', '')}`;
+    const lostAckBody = JSON.stringify({ type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: lostAckId } });
+    const lostAckSignature = sign({ secret, id: lostAckId, timestamp: now, body: lostAckBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': lostAckId,
+      'webhook-timestamp': String(now), 'webhook-signature': lostAckSignature };
+    // This opt-in local adapter commits the event, then closes the connection before HTTP acknowledgement.
+    let firstAttemptOutcome;
+    try {
+      const first = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { ...headers, 'x-wfl-test-fault': 'commit-then-drop-ack-once' }, body: lostAckBody,
+      });
+      firstAttemptOutcome = `http_${first.status}`;
+    } catch {
+      firstAttemptOutcome = 'transport_error';
+    }
+    const observedCountAfterLostAck = await observe();
+    const retry = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: lostAckBody,
+    });
+    const count = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    reports.push({ scenario: 'lost_ack_after_commit',
+      passed: firstAttemptOutcome === 'transport_error' &&
+        observedCountAfterLostAck === expectedProcessedCount &&
+        retry.status === options.successStatus && count === expectedProcessedCount,
+      firstAttemptOutcome, observedCountAfterLostAck, retryHttpStatus: retry.status,
+      observedProcessedCount: count, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

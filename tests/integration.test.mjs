@@ -149,3 +149,68 @@ test('retry check composes with concurrent duplicates without reusing an event I
     assert.equal(retry.observedProcessedCount, 3);
   });
 });
+
+test('opt-in lost acknowledgement observes the committed effect and safe signed redelivery', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, lostAckAfterCommit: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const lostAck = result.scenarios.at(-1);
+    assert.equal(lostAck.scenario, 'lost_ack_after_commit');
+    assert.equal(lostAck.firstAttemptOutcome, 'transport_error');
+    assert.equal(lostAck.observedCountAfterLostAck, 2);
+    assert.equal(lostAck.observedProcessedCount, 2);
+    assert.equal(lostAck.expectedProcessedCount, 2);
+    assert.equal(lostAck.retryHttpStatus, 200);
+  });
+});
+
+test('lost-ack regression detects replayed effects when the receiver forgets committed dedupe state', async () => {
+  await withServer({ unsafeForgetLostAckDedupe: true }, async (config) => {
+    const result = await runLab({ ...config, lostAckAfterCommit: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const lostAck = result.scenarios.at(-1);
+    assert.equal(lostAck.firstAttemptOutcome, 'transport_error');
+    assert.equal(lostAck.observedCountAfterLostAck, 2);
+    assert.equal(lostAck.expectedProcessedCount, 2);
+    assert.equal(lostAck.observedProcessedCount, 3);
+    assert.equal(lostAck.passed, false);
+  });
+});
+
+test('lost-ack scenario refuses to pass when a receiver ignores the fault adapter', async () => {
+  await withServer({ supportLostAckFault: false }, async (config) => {
+    const result = await runLab({ ...config, lostAckAfterCommit: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const lostAck = result.scenarios.at(-1);
+    assert.equal(lostAck.firstAttemptOutcome, 'http_200');
+    assert.equal(lostAck.observedCountAfterLostAck, 2);
+    assert.equal(lostAck.observedProcessedCount, 2);
+    assert.equal(lostAck.passed, false);
+  });
+});
+
+test('lost-ack option rejects nonboolean values before any local request', async () => {
+  await withServer({}, async (config) => {
+    for (const lostAckAfterCommit of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, lostAckAfterCommit }, { secret }),
+        /lostAckAfterCommit/);
+    }
+  });
+});
+
+test('lost-ack scenario composes with retry and concurrent checks using a fresh signed event', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({
+      ...config, concurrentDuplicateDeliveries: 4, retryAfterTransientFailure: true,
+      lostAckAfterCommit: true,
+    }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'lost_ack_after_commit');
+    assert.equal(result.scenarios.at(-1).expectedProcessedCount, 4);
+    assert.equal(result.scenarios.at(-1).observedProcessedCount, 4);
+  });
+});
