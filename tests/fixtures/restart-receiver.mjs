@@ -28,9 +28,12 @@ let processedCount = persisted.processedCount;
 const seen = new Set(process.env.WFL_TEST_FORGET_DEDUPE === '1' ? [] : persisted.seenIds);
 const receiverInstanceId = `${process.pid}:${randomUUID()}`;
 
-async function persist() {
+async function persist({ omitSeenId, omitCount = false } = {}) {
   const staged = `${statePath}.${process.pid}.tmp`;
-  await writeFile(staged, JSON.stringify({ processedCount, seenIds: [...seen] }), { flag: 'w' });
+  await writeFile(staged, JSON.stringify({
+    processedCount: processedCount - (omitCount ? 1 : 0),
+    seenIds: [...seen].filter((id) => id !== omitSeenId),
+  }), { flag: 'w' });
   await rename(staged, statePath);
 }
 
@@ -58,6 +61,20 @@ const server = createServer(async (req, res) => {
       signature: req.headers['webhook-signature'], tolerance: 300,
     });
     if (!valid) { res.writeHead(401); res.end(); return; }
+    if (req.headers['x-wfl-test-fault'] === 'persist-then-crash-before-ack' &&
+        typeof id === 'string' && id.startsWith('wfl_crash_') &&
+        process.env.WFL_TEST_IGNORE_CRASH !== '1') {
+      if (!seen.has(id)) {
+        seen.add(id);
+        processedCount++;
+        // Broken fixtures drop one half of the atomic count/dedupe record.
+        await persist({
+          omitSeenId: process.env.WFL_TEST_CRASH_LOSE_DEDUPE === '1' ? id : undefined,
+          omitCount: process.env.WFL_TEST_CRASH_LOSE_COUNT === '1',
+        });
+      }
+      process.exit(47);
+    }
     if (!seen.has(id)) {
       seen.add(id);
       processedCount++;

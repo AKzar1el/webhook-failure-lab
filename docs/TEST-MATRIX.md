@@ -18,6 +18,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
 | Real local receiver restart after committing a signed event (programmatic opt-in) | First delivery commits once; an independently restarted child process retains the observer count and deduplication record; identical signed retry does not commit twice | Local child-process integration fixture with atomic disk-state replacement, lost-dedupe negative fixture, no-op restart negative fixture |
+| Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -81,6 +82,27 @@ database durability, actual crash-on-write behavior, or externally observable
 exactly-once side effects. The observer and instance identifier are supplied by
 the receiver and can be inaccurate.
 
+Use `crashAfterPersist: true` only with the **programmatic** `runLab(config,
+{ secret, recoverReceiver })` API. The test-only receiver must recognize the
+header `x-wfl-test-fault: persist-then-crash-before-ack` on a fresh signed
+event, persist the effect counter and deduplication key, then terminate its
+process without returning an HTTP response. The caller-owned `recoverReceiver`
+must witness termination, start a distinct local process backed by the state,
+and return replacement `{ endpoint, observer }` loopback URLs. The runner
+expects a transport error, a changed nonempty `receiverInstanceId`, the
+committed count after recovery, and no additional effect when replaying the
+identical signed event. The CLI cannot control processes; absent callbacks,
+invalid flags, and nonloopback recovery URLs fail closed. Crash and graceful
+restart checks require separate runs.
+
+The synthetic integration fixture exits an actual Node child with code 47
+after an awaited atomic JSON-file rename. Broken receivers persist the count
+but lose the dedupe key, or persist the dedupe key but lose the count;
+another negative fixture ignores the fault header. This is **post-rename
+process-exit recovery**, not power-loss durability, an fsync guarantee, a crash
+during a multi-write transaction, or proof of external exactly-once effects.
+Both controller and observer remain caller-supplied evidence.
+
 The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
@@ -88,8 +110,8 @@ exactly-once delivery guarantee.
 
 ## Bounded next scenarios (not implemented yet)
 
-- Abrupt process crash between a durable write and acknowledgement, including
-  crash-consistent recovery (distinct from the controlled shutdown test).
+- Torn multi-write database transaction and power-loss/fsync durability
+  (not established by post-rename process exit).
 - Idempotency retention boundary expiry, scoped to a documented time window.
 
 Each new scenario must include a fixture proving the test detects a

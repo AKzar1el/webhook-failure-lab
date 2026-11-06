@@ -21,12 +21,18 @@ async function withServer(options, fn) {
   finally { await server.stop(); }
 }
 
-function launchRestartReceiver(statePath, { forgetDedupe = false } = {}) {
+function launchRestartReceiver(statePath, {
+  forgetDedupe = false, crashLoseDedupe = false, crashLoseCount = false,
+  ignoreCrashFault = false,
+} = {}) {
   return new Promise((resolve, reject) => {
     const child = fork(fileURLToPath(new URL('./fixtures/restart-receiver.mjs', import.meta.url)),
       [], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         env: { ...process.env, WFL_TEST_STATE_PATH: statePath, WFL_TEST_SECRET: secret,
-          WFL_TEST_FORGET_DEDUPE: forgetDedupe ? '1' : '0' } });
+          WFL_TEST_FORGET_DEDUPE: forgetDedupe ? '1' : '0',
+          WFL_TEST_CRASH_LOSE_DEDUPE: crashLoseDedupe ? '1' : '0',
+          WFL_TEST_CRASH_LOSE_COUNT: crashLoseCount ? '1' : '0',
+          WFL_TEST_IGNORE_CRASH: ignoreCrashFault ? '1' : '0' } });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString().slice(0, 1000); });
     const timer = setTimeout(() => finish(new Error('Local receiver startup timed out')), 4000);
@@ -82,6 +88,44 @@ async function withRestartReceiver({ forgetDedupeOnRestart = false } = {}, fn) {
   } finally {
     if (live) await stopRestartReceiver(live.child);
     await rm(directory, { recursive: true });
+  }
+}
+
+async function withCrashReceiver({
+  loseDedupeOnCrash = false, loseCountOnCrash = false, ignoreCrashFault = false,
+} = {}, fn) {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-crash-'));
+  const statePath = join(directory, 'durable.json');
+  let live;
+  try {
+    live = await launchRestartReceiver(statePath, {
+      crashLoseDedupe: loseDedupeOnCrash,
+      crashLoseCount: loseCountOnCrash,
+      ignoreCrashFault,
+    });
+    const config = live.config;
+    const recoverReceiver = async () => {
+      const oldChild = live.child;
+      const oldPid = oldChild.pid;
+      if (oldChild.exitCode === null && oldChild.signalCode === null) {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            oldChild.off('exit', onExit);
+            reject(new Error('Expected real receiver crash before acknowledgement'));
+          }, 3000);
+          function onExit() { clearTimeout(timer); resolve(); }
+          oldChild.once('exit', onExit);
+        });
+      }
+      assert.equal(oldChild.exitCode, 47, 'Fixture must terminate abruptly with crash exit code');
+      live = await launchRestartReceiver(statePath);
+      assert.notEqual(live.child.pid, oldPid, 'Recovery must launch a new OS process');
+      return live.config;
+    };
+    return await fn(config, recoverReceiver);
+  } finally {
+    if (live) await stopRestartReceiver(live.child);
+    await rm(directory, { recursive: true, force: true });
   }
 }
 
@@ -533,5 +577,78 @@ test('restart controller may only return loopback HTTP endpoint and observer URL
     await assert.rejects(() => runLab({ ...config, restartAfterCommit: true },
       { secret, restartReceiver: async () => ({ endpoint: 'https://example.com/webhook',
         observer: config.observer }) }), /loopback/i);
+  });
+});
+
+test('abrupt post-persist crash recovers a signed event without another observed effect', async () => {
+  await withCrashReceiver({}, async (config, recoverReceiver) => {
+    const result = await runLab({ ...config, crashAfterPersist: true }, { secret, recoverReceiver });
+    assert.equal(result.success, true);
+    const crash = result.scenarios.at(-1);
+    assert.equal(crash.scenario, 'crash_after_persist_before_ack');
+    assert.equal(crash.firstAttemptOutcome, 'transport_error');
+    assert.deepEqual(crash.observedCounts, [1, 2, 2]);
+    assert.equal(crash.retryHttpStatus, 200);
+    assert.notEqual(crash.receiverInstanceIds[0], crash.receiverInstanceIds[1]);
+    assert.equal(crash.expectedProcessedCount, 2);
+  });
+});
+
+test('abrupt crash catches a committed count without durable dedupe state', async () => {
+  await withCrashReceiver({ loseDedupeOnCrash: true }, async (config, recoverReceiver) => {
+    const result = await runLab({ ...config, crashAfterPersist: true }, { secret, recoverReceiver });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const crash = result.scenarios.at(-1);
+    assert.equal(crash.firstAttemptOutcome, 'transport_error');
+    assert.deepEqual(crash.observedCounts, [1, 2, 3]);
+    assert.equal(crash.expectedProcessedCount, 2);
+    assert.equal(crash.passed, false);
+  });
+});
+
+test('abrupt crash catches durable dedupe state with a lost effect count', async () => {
+  await withCrashReceiver({ loseCountOnCrash: true }, async (config, recoverReceiver) => {
+    const result = await runLab({ ...config, crashAfterPersist: true }, { secret, recoverReceiver });
+    assert.equal(result.success, false);
+    const crash = result.scenarios.at(-1);
+    assert.deepEqual(crash.observedCounts, [1, 1, 1]);
+    assert.equal(crash.expectedProcessedCount, 2);
+    assert.equal(crash.passed, false);
+  });
+});
+
+test('crash check rejects a local receiver that acknowledges instead of crashing', async () => {
+  await withCrashReceiver({ ignoreCrashFault: true }, async (config) => {
+    const result = await runLab({ ...config, crashAfterPersist: true },
+      { secret, recoverReceiver: async () => config });
+    assert.equal(result.success, false);
+    const crash = result.scenarios.at(-1);
+    assert.equal(crash.firstAttemptOutcome, 'http_200');
+    assert.equal(crash.passed, false);
+  });
+});
+
+test('crash scenario validates opt-in and recovery controller before any network request', async () => {
+  await withServer({}, async (config) => {
+    for (const crashAfterPersist of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, crashAfterPersist }, { secret }),
+        /crashAfterPersist/);
+    }
+    await assert.rejects(() => runLab({ ...config, crashAfterPersist: true }, { secret }),
+      /recoverReceiver/);
+    await assert.rejects(() => runLab({
+      ...config, restartAfterCommit: true, crashAfterPersist: true,
+    }, { secret, restartReceiver: async () => config, recoverReceiver: async () => config }),
+    /separate runs/);
+  });
+});
+
+test('crash recovery controller cannot return a non-loopback destination', async () => {
+  await withServer({}, async (config) => {
+    await assert.rejects(() => runLab({ ...config, crashAfterPersist: true },
+      { secret, recoverReceiver: async () => ({
+        endpoint: 'https://example.com/webhook', observer: config.observer,
+      }) }), /loopback/i);
   });
 });
