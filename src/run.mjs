@@ -44,6 +44,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (secretRotation !== undefined && typeof secretRotation !== 'boolean') {
     throw new TypeError('secretRotation must be a boolean');
   }
+  const conflictingEventIdPayload = config.conflictingEventIdPayload;
+  if (conflictingEventIdPayload !== undefined && typeof conflictingEventIdPayload !== 'boolean') {
+    throw new TypeError('conflictingEventIdPayload must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -73,7 +77,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, restartAfterCommit, crashAfterPersist,
+    outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload,
+    restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
 
@@ -415,6 +420,38 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount,
       retentionWindowSeconds: options.retentionWindowSeconds });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.conflictingEventIdPayload) {
+    const conflictId = `wfl_conflict_${randomUUID().replaceAll('-', '')}`;
+    const firstBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: conflictId } });
+    const differentBody = JSON.stringify({ type: 'test.updated',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: conflictId } });
+    // Both bodies have valid independent signatures for the SAME delivery ID.
+    // This is an event-ID collision, not an unsigned body-tampering test.
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': conflictId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: conflictId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    const first = await send(firstBody);
+    const afterFirst = await observe();
+    const replay = await send(firstBody);
+    const afterReplay = await observe();
+    const collision = await send(differentBody);
+    const afterCollision = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, replay.status, collision.status];
+    const observedCounts = [afterFirst, afterReplay, afterCollision];
+    reports.push({ scenario: 'signed_event_id_payload_conflict',
+      passed: httpStatuses[0] === options.successStatus &&
+        httpStatuses[1] === options.successStatus && httpStatuses[2] === 409 &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

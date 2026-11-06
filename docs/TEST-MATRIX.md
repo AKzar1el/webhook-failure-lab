@@ -20,6 +20,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Real local receiver restart after committing a signed event (programmatic opt-in) | First delivery commits once; an independently restarted child process retains the observer count and deduplication record; identical signed retry does not commit twice | Local child-process integration fixture with atomic disk-state replacement, lost-dedupe negative fixture, no-op restart negative fixture |
 | Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
 | Declared deduplication retention boundary and stale signed replay (programmatic opt-in) | Exact duplicate one second before retention expiry must not reprocess; unchanged signature at +301 seconds must be rejected without effect | Synthetic clock, premature-eviction and stale-replay acceptance broken receivers, no-op-clock negative fixture |
+| Same authenticated delivery ID reused with different signed payload (opt-in) | First signed event commits once; identical signed retry is idempotent; different validly signed body with same ID returns 409 without another effect | Local fixture catches silently acknowledged conflicts and reject-but-commit broken receivers |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -125,6 +126,18 @@ The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
 exactly-once delivery guarantee.
+
+Enable `"conflictingEventIdPayload": true` in local CLI configuration to
+exercise an explicit **strict event-ID immutability** contract. The runner
+sends a new signed event, a byte-identical signed retry (both expected 200),
+then a different body signed afresh with the same `webhook-id` (expected
+**409 Conflict**). All three observer counts must show exactly one new
+effect. Both signatures are valid; a 401 is not an acceptable stand-in for
+detecting the collision. Built-in deliberately broken receivers either
+silently acknowledge the changed body or reject it after committing another
+effect. This stricter rule is opt-in because it is a receiver/application
+contract, **not** a universal provider guarantee that event IDs never carry
+revised payloads. Keep the test adapter local-only.
 
 ## Bounded next scenarios (not implemented yet)
 
