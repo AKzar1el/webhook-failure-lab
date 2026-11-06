@@ -1,7 +1,9 @@
 import { createServer } from 'node:http';
 import { verify } from './standard.mjs';
 
-export async function startMock({ secret, dedupe = true, verifySignatures = true,
+export async function startMock({ secret, previousSecret, retiredSecret,
+  unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
+  unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -51,9 +53,20 @@ export async function startMock({ secret, dedupe = true, verifySignatures = true
     }
     const id = req.headers['webhook-id'];
     const ts = Number(req.headers['webhook-timestamp']);
-    const accepted = verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'],
-      tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY });
-    if (verifySignatures && !accepted) { res.writeHead(401); res.end(); return; }
+    const metadata = { id, timestamp: ts, body, signature: req.headers['webhook-signature'],
+      tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
+    const acceptedCurrent = verify({ secret, ...metadata });
+    const acceptedPrevious = previousSecret !== undefined && !unsafeRejectPreviousSecret &&
+      verify({ secret: previousSecret, ...metadata });
+    const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
+    const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired);
+    if (verifySignatures && !accepted) {
+      if (unsafeProcessRetiredBeforeReject && signedByRetired && !seen.has(id)) {
+        // Broken fixture commits the untrusted event but still returns a rejection status.
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(401); res.end(); return;
+    }
     if (supportOrderTransitions && typeof id === 'string' && id.startsWith('wfl_order_')) {
       let event;
       try { event = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
