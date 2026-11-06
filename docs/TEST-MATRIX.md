@@ -23,6 +23,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Same authenticated delivery ID reused with different signed payload (opt-in) | First signed event commits once; identical signed retry is idempotent; different validly signed body with same ID returns 409 without another effect | Local fixture catches silently acknowledged conflicts and reject-but-commit broken receivers |
 | Same ID and body re-signed at a different fresh timestamp (opt-in) | Both validly signed deliveries are acknowledged; first commits once, second makes no new observed effect | Local fixture catches signature-keyed deduplication and rejection of valid re-signatures; CLI config and composition regressions |
 | Correctly signed event dated one hour in the future (opt-in) | Reject 4xx without committing any new observed effect | Local negative fixtures detect accepted future timestamps and rejected events that still commit; no system clock change |
+| Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -166,6 +167,18 @@ signatures, or reject future signatures after recording an effect. The
 scenario uses no wall-clock waits or system-clock changes; the runner and
 receiver should have reasonably synchronized clocks and a 300-second
 Standard Webhooks freshness policy. Passing cannot prove unobserved effects.
+
+Enable `"rejectTamperedDuplicateSignature": true` in local CLI configuration
+to verify that **authentication precedes deduplication**. The runner first
+sends one fresh valid signed event, then replays its exact event ID, timestamp
+and raw body with a single HMAC digest character changed. The receiver must
+accept the first request, reject the second with a configured 4xx status, and
+record only one new observed effect. This tests a different failure path from
+the baseline's tampered body on a previously unseen ID: a cached event ID must
+not bypass verification. Two deliberately broken local receivers either
+acknowledge the unauthenticated duplicate or commit an additional effect before
+returning 401. The check is opt-in, uses only synthetic keys and loopback HTTP,
+and does not establish unseen external business-effect correctness.
 
 ## Bounded next scenarios (not implemented yet)
 
