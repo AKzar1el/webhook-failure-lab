@@ -9,11 +9,13 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
+  unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
+  const seenResignedSignatures = new Set();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
   const resourceStates = new Map();
@@ -96,6 +98,18 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       processedCount += 1;
       seen.add(id);
       seenConflictBodies.set(id, body);
+      res.writeHead(200); res.end('accepted'); return;
+    }
+    if (typeof id === 'string' && id.startsWith('wfl_resign_') &&
+        (unsafeDedupeBySignature || unsafeRejectResignedDuplicate)) {
+      const signatureSeen = seenResignedSignatures.has(req.headers['webhook-signature']);
+      if (unsafeRejectResignedDuplicate && seen.has(id) && !signatureSeen) {
+        res.writeHead(409); res.end('new signature for duplicate event'); return;
+      }
+      // Broken receiver either deduplicates by the changing HMAC or rejects a valid re-signature.
+      if (unsafeDedupeBySignature ? !signatureSeen : !seen.has(id)) processedCount += 1;
+      seenResignedSignatures.add(req.headers['webhook-signature']);
+      seen.add(id);
       res.writeHead(200); res.end('accepted'); return;
     }
     if (supportOrderTransitions && typeof id === 'string' && id.startsWith('wfl_order_')) {
