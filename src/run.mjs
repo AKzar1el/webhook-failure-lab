@@ -56,6 +56,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (rejectFutureSignedTimestamp !== undefined && typeof rejectFutureSignedTimestamp !== 'boolean') {
     throw new TypeError('rejectFutureSignedTimestamp must be a boolean');
   }
+  const rejectTamperedDuplicateSignature = config.rejectTamperedDuplicateSignature;
+  if (rejectTamperedDuplicateSignature !== undefined &&
+      typeof rejectTamperedDuplicateSignature !== 'boolean') {
+    throw new TypeError('rejectTamperedDuplicateSignature must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -86,7 +91,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
     outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload, resignedDuplicateDelivery,
-    rejectFutureSignedTimestamp,
+    rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
@@ -498,6 +503,35 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
     // HMAC matches the future timestamp; only freshness policy should reject this delivery.
     await deliver('future_signed_timestamp', futureId, futureBody, futureBody,
       futureTimestamp, false, 0);
+  }
+
+  if (options.rejectTamperedDuplicateSignature) {
+    const duplicateId = `wfl_dupauth_${randomUUID().replaceAll('-', '')}`;
+    const duplicateBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: duplicateId } });
+    const validSignature = sign({ secret, id: duplicateId, timestamp: now, body: duplicateBody });
+    // Change one digest character, retaining a well-formed but invalid HMAC for the same ID and bytes.
+    const tamperedSignature = validSignature.slice(0, 3) +
+      (validSignature[3] === 'A' ? 'B' : 'A') + validSignature.slice(4);
+    const send = (signature) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': duplicateId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: duplicateBody,
+    });
+    const original = await send(validSignature);
+    const afterOriginal = await observe();
+    const tampered = await send(tamperedSignature);
+    const afterTampered = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [original.status, tampered.status];
+    const observedCounts = [afterOriginal, afterTampered];
+    reports.push({ scenario: 'tampered_duplicate_signature',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,

@@ -971,3 +971,84 @@ test('CLI exposes future signed timestamp rejection without leaking synthetic ke
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in duplicate authentication rejects a modified HMAC for an already processed event ID', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, rejectTamperedDuplicateSignature: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const replay = result.scenarios.at(-1);
+    assert.equal(replay.scenario, 'tampered_duplicate_signature');
+    assert.deepEqual(replay.httpStatuses, [200, 401]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.expectedProcessedCount, 2);
+    assert.equal(replay.passed, true);
+  });
+});
+
+test('duplicate authentication detects a receiver that checks dedupe before the HMAC', async () => {
+  await withServer({ unsafeAcknowledgeTamperedDuplicate: true }, async (config) => {
+    const result = await runLab({ ...config, rejectTamperedDuplicateSignature: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const replay = result.scenarios.at(-1);
+    assert.deepEqual(replay.httpStatuses, [200, 200]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.passed, false);
+  });
+});
+
+test('duplicate authentication detects a rejected replay that still commits another effect', async () => {
+  await withServer({ unsafeCommitTamperedDuplicateBeforeReject: true }, async (config) => {
+    const result = await runLab({ ...config, rejectTamperedDuplicateSignature: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const replay = result.scenarios.at(-1);
+    assert.deepEqual(replay.httpStatuses, [200, 401]);
+    assert.deepEqual(replay.observedCounts, [2, 3]);
+    assert.equal(replay.passed, false);
+  });
+});
+
+test('duplicate authentication opt-in validates boolean before any requests', async () => {
+  await withServer({}, async (config) => {
+    for (const rejectTamperedDuplicateSignature of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, rejectTamperedDuplicateSignature }, { secret }),
+        /rejectTamperedDuplicateSignature/);
+    }
+    const observer = await fetch(config.observer);
+    assert.equal((await observer.json()).processedCount, 0);
+  });
+});
+
+test('duplicate authentication composes with re-signed and signed-payload collision checks', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, resignedDuplicateDelivery: true,
+      conflictingEventIdPayload: true, rejectTamperedDuplicateSignature: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'tampered_duplicate_signature');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [4, 4]);
+  });
+});
+
+test('CLI exposes duplicate signature verification without leaking HMAC or secret', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-dup-auth-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, rejectTamperedDuplicateSignature: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'tampered_duplicate_signature');
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 401]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

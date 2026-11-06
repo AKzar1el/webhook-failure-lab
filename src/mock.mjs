@@ -11,6 +11,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
+  unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -69,6 +70,11 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       seen.delete(id);
     }
     const expiredReplay = seenAt.has(id) && !seen.has(id);
+    if (unsafeAcknowledgeTamperedDuplicate && typeof id === 'string' &&
+        id.startsWith('wfl_dupauth_') && seen.has(id)) {
+      // Broken receiver acknowledges known IDs before verifying the incoming HMAC.
+      res.writeHead(200); res.end('accepted duplicate'); return;
+    }
     const metadata = { id, timestamp: ts, body, signature: req.headers['webhook-signature'],
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
@@ -84,6 +90,11 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
     const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired);
     if (verifySignatures && !accepted) {
+      if (unsafeCommitTamperedDuplicateBeforeReject && typeof id === 'string' &&
+          id.startsWith('wfl_dupauth_') && seen.has(id)) {
+        // Broken receiver rejects the invalid HMAC only after another effect.
+        processedCount += 1;
+      }
       if (unsafeCommitFutureBeforeReject && hasValidFutureSignature && !seen.has(id)) {
         // Broken fixture writes the effect before ultimately rejecting the future timestamp.
         processedCount += 1; seen.add(id);
