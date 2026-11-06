@@ -214,3 +214,78 @@ test('lost-ack scenario composes with retry and concurrent checks using a fresh 
     assert.equal(result.scenarios.at(-1).observedProcessedCount, 4);
   });
 });
+
+test('out-of-order activation is rejected before create and safely retried after create', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, outOfOrderStateTransitions: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const order = result.scenarios.at(-1);
+    assert.equal(order.scenario, 'out_of_order_state_transition');
+    assert.equal(order.passed, true);
+    assert.deepEqual(order.httpStatuses, [409, 200, 200]);
+    assert.deepEqual(order.observedResourceStates, ['missing', 'created', 'activated']);
+    assert.deepEqual(order.observedCounts, [1, 2, 3]);
+    assert.equal(order.expectedProcessedCount, 3);
+  });
+});
+
+test('out-of-order test detects a receiver that applies activation before creation', async () => {
+  await withServer({ unsafeApplyOutOfOrder: true }, async (config) => {
+    const result = await runLab({ ...config, outOfOrderStateTransitions: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const order = result.scenarios.at(-1);
+    assert.equal(order.scenario, 'out_of_order_state_transition');
+    assert.equal(order.passed, false);
+    assert.equal(order.observedResourceStates[0], 'activated');
+    assert.equal(order.observedCounts[0], 2);
+  });
+});
+
+test('out-of-order test detects a receiver that deduplicates a rejected activation', async () => {
+  await withServer({ unsafeMarkRejectedOrderSeen: true }, async (config) => {
+    const result = await runLab({ ...config, outOfOrderStateTransitions: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const order = result.scenarios.at(-1);
+    assert.equal(order.scenario, 'out_of_order_state_transition');
+    assert.deepEqual(order.httpStatuses, [409, 200, 200]);
+    assert.deepEqual(order.observedResourceStates, ['missing', 'created', 'created']);
+    assert.deepEqual(order.observedCounts, [1, 2, 2]);
+  });
+});
+
+test('out-of-order check rejects a receiver without the required transition adapter', async () => {
+  await withServer({ supportOrderTransitions: false }, async (config) => {
+    const result = await runLab({ ...config, outOfOrderStateTransitions: true }, { secret });
+    assert.equal(result.success, false);
+    assert.equal(result.scenarios.at(-1).scenario, 'out_of_order_state_transition');
+    assert.equal(result.scenarios.at(-1).passed, false);
+  });
+});
+
+test('out-of-order option rejects nonboolean values before sending any requests', async () => {
+  await withServer({}, async (config) => {
+    for (const outOfOrderStateTransitions of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, outOfOrderStateTransitions }, { secret }),
+        /outOfOrderStateTransitions/);
+    }
+  });
+});
+
+test('out-of-order scenario composes with other optional checks without reusing event IDs', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({
+      ...config, concurrentDuplicateDeliveries: 4, retryAfterTransientFailure: true,
+      lostAckAfterCommit: true, outOfOrderStateTransitions: true,
+    }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 8);
+    const order = result.scenarios.at(-1);
+    assert.equal(order.scenario, 'out_of_order_state_transition');
+    assert.deepEqual(order.httpStatuses, [409, 200, 200]);
+    assert.deepEqual(order.observedResourceStates, ['missing', 'created', 'activated']);
+    assert.deepEqual(order.observedCounts, [4, 5, 6]);
+  });
+});

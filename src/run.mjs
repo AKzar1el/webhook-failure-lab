@@ -36,23 +36,31 @@ function checkOptions(config, secret) {
   if (lostAckAfterCommit !== undefined && typeof lostAckAfterCommit !== 'boolean') {
     throw new TypeError('lostAckAfterCommit must be a boolean');
   }
+  const outOfOrderStateTransitions = config.outOfOrderStateTransitions;
+  if (outOfOrderStateTransitions !== undefined && typeof outOfOrderStateTransitions !== 'boolean') {
+    throw new TypeError('outOfOrderStateTransitions must be a boolean');
+  }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
-    concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit };
+    concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
+    outOfOrderStateTransitions };
 }
 
 export async function runLab(config, { secret, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
   const options = checkOptions(config, secret);
   const reports = [];
   const timeout = () => AbortSignal.timeout(options.timeoutMs);
-  const observe = async () => {
-    const response = await request(options.observer, { method: 'GET', redirect: 'manual', signal: timeout() });
+  const observeState = async (resourceId) => {
+    const target = new URL(options.observer);
+    if (resourceId !== undefined) target.searchParams.set('resourceId', resourceId);
+    const response = await request(target, { method: 'GET', redirect: 'manual', signal: timeout() });
     if (response.status !== 200) throw new Error(`Observer returned HTTP ${response.status}`);
     const result = await response.json();
     if (!Number.isSafeInteger(result?.processedCount) || result.processedCount < 0) {
       throw new Error('Observer must return non-negative integer processedCount');
     }
-    return result.processedCount;
+    return result;
   };
+  const observe = async () => (await observeState()).processedCount;
   let expectedCount = await observe();
   const now = clock();
   const id = `wfl_${randomUUID().replaceAll('-', '')}`;
@@ -170,6 +178,51 @@ export async function runLab(config, { secret, request = fetch, clock = () => Ma
         retry.status === options.successStatus && count === expectedProcessedCount,
       firstAttemptOutcome, observedCountAfterLostAck, retryHttpStatus: retry.status,
       observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.outOfOrderStateTransitions) {
+    const resourceId = `wfl_resource_${randomUUID().replaceAll('-', '')}`;
+    const eventTime = new Date(now * 1000).toISOString();
+    const makeOrderEvent = (type, name) => {
+      const messageId = `wfl_order_${name}_${randomUUID().replaceAll('-', '')}`;
+      const rawBody = JSON.stringify({ type, timestamp: eventTime, data: { id: resourceId } });
+      return { rawBody, headers: {
+        'content-type': 'application/json', 'webhook-id': messageId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: messageId, timestamp: now, body: rawBody }),
+      } };
+    };
+    const create = makeOrderEvent('test.resource.created', 'create');
+    const activate = makeOrderEvent('test.resource.activated', 'activate');
+    const send = (event) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: event.headers, body: event.rawBody,
+    });
+    // Retry the exact activation event after its prerequisite is created.
+    const first = await send(activate);
+    const afterFirst = await observeState(resourceId);
+    const second = await send(create);
+    const afterCreate = await observeState(resourceId);
+    const third = await send(activate);
+    const afterActivation = await observeState(resourceId);
+    const httpStatuses = [first.status, second.status, third.status];
+    const observedCounts = [afterFirst.processedCount, afterCreate.processedCount,
+      afterActivation.processedCount];
+    const observedResourceStates = [afterFirst.resourceState ?? null,
+      afterCreate.resourceState ?? null, afterActivation.resourceState ?? null];
+    const expectedProcessedCount = expectedCount + 2;
+    reports.push({ scenario: 'out_of_order_state_transition',
+      passed: httpStatuses[0] === 409 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedCount + 1 &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedResourceStates[0] === 'missing' &&
+        observedResourceStates[1] === 'created' &&
+        observedResourceStates[2] === 'activated',
+      httpStatuses, observedCounts, observedResourceStates, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
