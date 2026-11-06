@@ -808,3 +808,84 @@ test('CLI exposes opt-in signed event ID conflict check without leaking signing 
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in re-signed duplicate keeps one observed effect for the same event ID and body', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, resignedDuplicateDelivery: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const replay = result.scenarios.at(-1);
+    assert.equal(replay.scenario, 'resigned_duplicate_delivery');
+    assert.deepEqual(replay.httpStatuses, [200, 200]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.expectedProcessedCount, 2);
+  });
+});
+
+test('re-signed duplicate catches a receiver deduplicating by signature rather than event ID', async () => {
+  await withServer({ unsafeDedupeBySignature: true }, async (config) => {
+    const result = await runLab({ ...config, resignedDuplicateDelivery: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const replay = result.scenarios.at(-1);
+    assert.equal(replay.scenario, 'resigned_duplicate_delivery');
+    assert.deepEqual(replay.httpStatuses, [200, 200]);
+    assert.deepEqual(replay.observedCounts, [2, 3]);
+    assert.equal(replay.passed, false);
+  });
+});
+
+test('re-signed duplicate catches receiver that rejects a new valid signature for a known ID', async () => {
+  await withServer({ unsafeRejectResignedDuplicate: true }, async (config) => {
+    const result = await runLab({ ...config, resignedDuplicateDelivery: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const replay = result.scenarios.at(-1);
+    assert.deepEqual(replay.httpStatuses, [200, 409]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.passed, false);
+  });
+});
+
+test('re-signed duplicate opt-in rejects invalid values before sending any request', async () => {
+  await withServer({}, async (config) => {
+    for (const resignedDuplicateDelivery of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, resignedDuplicateDelivery }, { secret }),
+        /resignedDuplicateDelivery/);
+    }
+    const observer = await fetch(config.observer);
+    assert.equal((await observer.json()).processedCount, 0);
+  });
+});
+
+test('re-signed retry composes with strict event-ID payload collision and concurrent duplication', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, resignedDuplicateDelivery: true,
+      conflictingEventIdPayload: true, concurrentDuplicateDeliveries: 4 }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'resigned_duplicate_delivery');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [4, 4]);
+  });
+});
+
+test('CLI exposes re-signed duplicate check without serializing signing keys or signatures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-resigned-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, resignedDuplicateDelivery: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'resigned_duplicate_delivery');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 2]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

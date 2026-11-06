@@ -21,6 +21,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
 | Declared deduplication retention boundary and stale signed replay (programmatic opt-in) | Exact duplicate one second before retention expiry must not reprocess; unchanged signature at +301 seconds must be rejected without effect | Synthetic clock, premature-eviction and stale-replay acceptance broken receivers, no-op-clock negative fixture |
 | Same authenticated delivery ID reused with different signed payload (opt-in) | First signed event commits once; identical signed retry is idempotent; different validly signed body with same ID returns 409 without another effect | Local fixture catches silently acknowledged conflicts and reject-but-commit broken receivers |
+| Same ID and body re-signed at a different fresh timestamp (opt-in) | Both validly signed deliveries are acknowledged; first commits once, second makes no new observed effect | Local fixture catches signature-keyed deduplication and rejection of valid re-signatures; CLI config and composition regressions |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -138,6 +139,19 @@ silently acknowledge the changed body or reject it after committing another
 effect. This stricter rule is opt-in because it is a receiver/application
 contract, **not** a universal provider guarantee that event IDs never carry
 revised payloads. Keep the test adapter local-only.
+
+Enable `"resignedDuplicateDelivery": true` in local CLI configuration to
+exercise a separate **same-event-ID re-signing** contract. The runner sends
+one fresh signed event, then an identical body and ID authenticated with a
+different timestamp (one second apart) and corresponding valid signature.
+Both responses must equal `successStatus`; the observer count may increase
+only for the initial delivery. Local broken receivers instead key the dedupe
+record on the signature (committing twice) or reject the new valid signature
+for an already accepted ID. These negative fixtures fail the scenario. This
+does not test provider-specific retry policy or require a service to support
+re-signed duplicate IDs universally; enable it only for a local receiver
+whose application contract accepts that behavior. The observer remains
+caller-controlled, not proof of external exactly-once business effects.
 
 ## Bounded next scenarios (not implemented yet)
 

@@ -162,13 +162,31 @@ webhook provider**. Enable it only for a local receiver that promises
 immutable payloads per delivery ID and supports 409 for a conflict. It
 does not prove the absence of unobserved external effects.
 
+### Opt-in freshly re-signed duplicate delivery
+
+Add `"resignedDuplicateDelivery": true` to `lab.json` to check an event-ID-based
+idempotency contract when a retry has the **same event ID and identical body**
+but a different, independently valid signing timestamp and HMAC signature.
+Both deliveries must return `successStatus`; the first increases the observed
+processed count by one and the re-signed retry must not increase it again.
+This is distinct from the default byte-identical retry and from the strict
+event-ID payload conflict check (which sends a *changed* body).
+
+The built-in synthetic negative receivers detect both signature-keyed
+deduplication (a duplicate committed twice) and rejection of a valid
+re-signature (HTTP 409). The timestamps differ by one second, without waiting
+or changing system time. This opt-in contract is appropriate only when the
+receiver/provider explicitly permits re-signing the same delivery ID;
+it does **not** prove that any particular provider actually re-signs retries,
+nor that unobserved business-side effects occur exactly once.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), and strict signed event-ID payload conflict handling. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, and same-ID re-signed retries. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

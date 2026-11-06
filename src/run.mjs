@@ -48,6 +48,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (conflictingEventIdPayload !== undefined && typeof conflictingEventIdPayload !== 'boolean') {
     throw new TypeError('conflictingEventIdPayload must be a boolean');
   }
+  const resignedDuplicateDelivery = config.resignedDuplicateDelivery;
+  if (resignedDuplicateDelivery !== undefined && typeof resignedDuplicateDelivery !== 'boolean') {
+    throw new TypeError('resignedDuplicateDelivery must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -77,7 +81,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload,
+    outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload, resignedDuplicateDelivery,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
@@ -450,6 +454,32 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
     reports.push({ scenario: 'signed_event_id_payload_conflict',
       passed: httpStatuses[0] === options.successStatus &&
         httpStatuses[1] === options.successStatus && httpStatuses[2] === 409 &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.resignedDuplicateDelivery) {
+    const replayId = `wfl_resign_${randomUUID().replaceAll('-', '')}`;
+    const replayBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: replayId } });
+    // Same event ID and bytes, but the second valid signature covers a different timestamp.
+    const send = (timestamp) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': replayId,
+        'webhook-timestamp': String(timestamp),
+        'webhook-signature': sign({ secret, id: replayId, timestamp, body: replayBody }) },
+      body: replayBody,
+    });
+    const first = await send(now);
+    const afterFirst = await observe();
+    const retry = await send(now - 1);
+    const afterRetry = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, retry.status];
+    const observedCounts = [afterFirst, afterRetry];
+    reports.push({ scenario: 'resigned_duplicate_delivery',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
