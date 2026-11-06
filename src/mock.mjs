@@ -7,8 +7,11 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
-  unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false } = {}) {
+  unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
+  clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
+  unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
+  const seenAt = new Map();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
   const resourceStates = new Map();
@@ -53,9 +56,19 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     }
     const id = req.headers['webhook-id'];
     const ts = Number(req.headers['webhook-timestamp']);
+    const receiverNow = clock();
+    const effectiveRetention = unsafePrematureRetentionEviction
+      ? Math.floor(dedupeRetentionSeconds / 2) : dedupeRetentionSeconds;
+    if (effectiveRetention !== undefined && seenAt.has(id) &&
+        receiverNow - seenAt.get(id) >= effectiveRetention) {
+      seen.delete(id);
+    }
+    const expiredReplay = seenAt.has(id) && !seen.has(id);
     const metadata = { id, timestamp: ts, body, signature: req.headers['webhook-signature'],
-      tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
-    const acceptedCurrent = verify({ secret, ...metadata });
+      now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
+    const acceptedCurrent = verify({ secret, ...metadata }) ||
+      (unsafeAcceptExpiredReplay && expiredReplay &&
+        verify({ secret, ...metadata, tolerance: Number.POSITIVE_INFINITY }));
     const acceptedPrevious = previousSecret !== undefined && !unsafeRejectPreviousSecret &&
       verify({ secret: previousSecret, ...metadata });
     const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
@@ -118,7 +131,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       // Broken fixture: every concurrent request reads state before any write.
       await rendezvous(id);
     }
-    if (!dedupe || !alreadySeen) { processedCount += 1; seen.add(id); }
+    if (!dedupe || !alreadySeen) {
+      processedCount += 1; seen.add(id);
+      if (dedupeRetentionSeconds !== undefined) seenAt.set(id, receiverNow);
+    }
     res.writeHead(200); res.end('accepted');
   });
   await new Promise((resolve, reject) => {

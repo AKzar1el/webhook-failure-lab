@@ -118,13 +118,41 @@ This is a **post-rename process-exit** contract, not a proof of power-loss
 durability, fsync, a torn multi-write database transaction, or external
 exactly-once effects. Both recovery controller and observer are user-supplied.
 
+### Opt-in deduplication retention and stale replay boundary
+
+Use `retentionWindowSeconds: 60` (integer 2-240) with the **programmatic**
+`runLab(config, { secret, advanceReceiverTime })` API. The callback must advance
+only your isolated receiver's synthetic clock by the requested positive number
+of seconds; it must not alter the system clock or send real traffic. The
+scenario processes one fresh signed event, then replays the identical
+event **one second before** the declared retention window expires. Both
+responses must succeed, and only the first may increase the observer count.
+It then advances the test receiver's clock to **301 seconds** after the
+original signature timestamp and replays the unchanged signed event again.
+That replay must be rejected without an additional observed effect because
+its signature timestamp is stale under the 300-second tolerance.
+
+The built-in synthetic fixture models 60-second deduplication retention and
+has negative variants that (a) expire keys prematurely and (b) accept a
+previously processed, stale signed event after dedupe eviction. A no-op time
+controller is also detected. The JSON CLI intentionally cannot control a
+receiver's clock: configuring this option there fails before any requests.
+Run this test separately from the process restart and crash checks.
+
+This tests **protection inside a stated retention window and stale-signature
+rejection after it**, not whether a receiver must reprocess events after its
+retention window. Longer deduplication retention is permissible; an event
+replayed with a newly signed, fresh timestamp after expiry is not tested.
+The observer is caller-supplied and cannot prove external exactly-once effects.
+Never enable synthetic time controls on production receivers.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart and a post-persistence abrupt receiver exit (both process tests programmatic-only). No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
+- The opt-in checks cover concurrent duplicate delivery, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart, a post-persistence abrupt receiver exit, and controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only). No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

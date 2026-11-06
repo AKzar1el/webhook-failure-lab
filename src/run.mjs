@@ -52,8 +52,17 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (crashAfterPersist !== undefined && typeof crashAfterPersist !== 'boolean') {
     throw new TypeError('crashAfterPersist must be a boolean');
   }
+  const retentionWindowSeconds = config.retentionWindowSeconds;
+  if (retentionWindowSeconds !== undefined &&
+      (!Number.isInteger(retentionWindowSeconds) || retentionWindowSeconds < 2 ||
+       retentionWindowSeconds > 240)) {
+    throw new TypeError('retentionWindowSeconds must be an integer between 2 and 240');
+  }
   if (crashAfterPersist && restartAfterCommit) {
     throw new TypeError('crashAfterPersist and restartAfterCommit require separate runs');
+  }
+  if (retentionWindowSeconds !== undefined && (crashAfterPersist || restartAfterCommit)) {
+    throw new TypeError('retentionWindowSeconds and process controllers require separate runs');
   }
   if (secretRotation) {
     keyFromSecret(previousSecret);
@@ -64,11 +73,12 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, restartAfterCommit, crashAfterPersist };
+    outOfOrderStateTransitions, secretRotation, restartAfterCommit, crashAfterPersist,
+    retentionWindowSeconds };
 }
 
 export async function runLab(config, { secret, previousSecret, retiredSecret,
-  restartReceiver, recoverReceiver, request = fetch,
+  restartReceiver, recoverReceiver, advanceReceiverTime, request = fetch,
   clock = () => Math.floor(Date.now() / 1000) } = {}) {
   const options = checkOptions(config, secret, previousSecret, retiredSecret);
   if (options.restartAfterCommit && typeof restartReceiver !== 'function') {
@@ -76,6 +86,9 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
   }
   if (options.crashAfterPersist && typeof recoverReceiver !== 'function') {
     throw new TypeError('recoverReceiver must be a local crashed-process recovery function');
+  }
+  if (options.retentionWindowSeconds !== undefined && typeof advanceReceiverTime !== 'function') {
+    throw new TypeError('advanceReceiverTime must be a local synthetic time-controller function');
   }
   const reports = [];
   const timeout = () => AbortSignal.timeout(options.timeoutMs);
@@ -369,6 +382,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         receiverInstanceIds[0] !== receiverInstanceIds[1],
       firstAttemptOutcome, retryHttpStatus: retry.status, observedCounts,
       receiverInstanceIds, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.retentionWindowSeconds !== undefined) {
+    const retentionId = `wfl_retention_${randomUUID().replaceAll('-', '')}`;
+    const retentionBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: retentionId } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': retentionId,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id: retentionId, timestamp: now, body: retentionBody }) };
+    const replay = () => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: retentionBody,
+    });
+    const first = await replay();
+    const afterFirst = await observe();
+    // The caller advances only its synthetic test receiver clock; no real wait or system clock change.
+    await advanceReceiverTime(options.retentionWindowSeconds - 1);
+    const beforeExpiry = await replay();
+    const afterBeforeExpiry = await observe();
+    // At 301 seconds the unchanged signature is stale under the Standard Webhooks 300s tolerance.
+    await advanceReceiverTime(301 - (options.retentionWindowSeconds - 1));
+    const staleReplay = await replay();
+    const afterStaleReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, beforeExpiry.status, staleReplay.status];
+    const observedCounts = [afterFirst, afterBeforeExpiry, afterStaleReplay];
+    reports.push({ scenario: 'retention_boundary_stale_replay',
+      passed: httpStatuses[0] === options.successStatus &&
+        httpStatuses[1] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[2]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount,
+      retentionWindowSeconds: options.retentionWindowSeconds });
     expectedCount = expectedProcessedCount;
   }
 
