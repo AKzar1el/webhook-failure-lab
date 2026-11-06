@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+*.log
+.env*
+!.env.example
+.DS_Store
+secrets.txt
+.revenue-shot/
+.pytest_cache/
+*.clixml
