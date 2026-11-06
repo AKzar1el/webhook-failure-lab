@@ -52,6 +52,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (resignedDuplicateDelivery !== undefined && typeof resignedDuplicateDelivery !== 'boolean') {
     throw new TypeError('resignedDuplicateDelivery must be a boolean');
   }
+  const rejectFutureSignedTimestamp = config.rejectFutureSignedTimestamp;
+  if (rejectFutureSignedTimestamp !== undefined && typeof rejectFutureSignedTimestamp !== 'boolean') {
+    throw new TypeError('rejectFutureSignedTimestamp must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -82,6 +86,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
     outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload, resignedDuplicateDelivery,
+    rejectFutureSignedTimestamp,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
@@ -483,6 +488,16 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectFutureSignedTimestamp) {
+    const futureId = `wfl_future_${randomUUID().replaceAll('-', '')}`;
+    const futureTimestamp = now + 3600;
+    const futureBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(futureTimestamp * 1000).toISOString(), data: { id: futureId } });
+    // HMAC matches the future timestamp; only freshness policy should reject this delivery.
+    await deliver('future_signed_timestamp', futureId, futureBody, futureBody,
+      futureTimestamp, false, 0);
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,

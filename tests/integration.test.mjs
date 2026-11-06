@@ -889,3 +889,85 @@ test('CLI exposes re-signed duplicate check without serializing signing keys or 
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in future-dated signed delivery is rejected with no committed effect', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, rejectFutureSignedTimestamp: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const future = result.scenarios.at(-1);
+    assert.equal(future.scenario, 'future_signed_timestamp');
+    assert.equal(future.httpStatus, 401);
+    assert.equal(future.observedProcessedCount, 1);
+    assert.equal(future.expectedProcessedCount, 1);
+    assert.equal(future.passed, true);
+  });
+});
+
+test('future timestamp scenario catches receiver that only checks signatures and past expiry', async () => {
+  await withServer({ unsafeAcceptFutureTimestamp: true }, async (config) => {
+    const result = await runLab({ ...config, rejectFutureSignedTimestamp: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const future = result.scenarios.at(-1);
+    assert.equal(future.scenario, 'future_signed_timestamp');
+    assert.equal(future.httpStatus, 200);
+    assert.equal(future.observedProcessedCount, 2);
+    assert.equal(future.passed, false);
+  });
+});
+
+test('future timestamp scenario catches rejection after a forbidden observed commit', async () => {
+  await withServer({ unsafeCommitFutureBeforeReject: true }, async (config) => {
+    const result = await runLab({ ...config, rejectFutureSignedTimestamp: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const future = result.scenarios.at(-1);
+    assert.equal(future.scenario, 'future_signed_timestamp');
+    assert.equal(future.httpStatus, 401);
+    assert.equal(future.observedProcessedCount, 2);
+    assert.equal(future.passed, false);
+  });
+});
+
+test('future timestamp opt-in validates boolean before making any requests', async () => {
+  await withServer({}, async (config) => {
+    for (const rejectFutureSignedTimestamp of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, rejectFutureSignedTimestamp }, { secret }),
+        /rejectFutureSignedTimestamp/);
+    }
+    const observer = await fetch(config.observer);
+    assert.equal((await observer.json()).processedCount, 0);
+  });
+});
+
+test('future timestamp rejection composes with re-signed and concurrent duplicates', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, rejectFutureSignedTimestamp: true,
+      resignedDuplicateDelivery: true, concurrentDuplicateDeliveries: 4 }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'future_signed_timestamp');
+    assert.equal(result.scenarios.at(-1).observedProcessedCount, 3);
+  });
+});
+
+test('CLI exposes future signed timestamp rejection without leaking synthetic keys', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-future-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, rejectFutureSignedTimestamp: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'future_signed_timestamp');
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});
