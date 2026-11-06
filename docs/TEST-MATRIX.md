@@ -12,10 +12,14 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Same event ID delivered twice | Acknowledge without repeated business side effect | Local smoke |
 | Modified body after signing | Reject; observer state unchanged | Local smoke |
 | Stale signed timestamp | Reject; observer state unchanged | Local smoke |
+| Concurrent copies of one freshly signed event (opt-in) | All acknowledged; observer count rises exactly once | Local integration test, plus deliberately non-atomic negative receiver fixture |
 
-Run `npm run verify` to execute unit tests and the four localhost smoke
-scenarios. The baseline also has negative tests for deliberate duplicate
-processing and receivers accepting invalid signatures.
+Run `npm run verify` to execute unit tests, the concurrency regression tests,
+and the four default localhost smoke scenarios. Set
+`"concurrentDuplicateDeliveries": 4` (integer 2-8) in local configuration
+to enable the fifth check against your own receiver. The baseline also has
+negative tests for deliberate duplicate processing and receivers accepting
+invalid signatures.
 
 The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
@@ -26,7 +30,6 @@ exactly-once delivery guarantee.
 
 - Failed first attempt followed by retry, where the failure is injected
   through a deterministic fake receiver.
-- Concurrent deliveries of one event ID with a single observable side effect.
 - Two dependent event types delivered out of order, with explicit state
   transition assertions.
 - Receiver restart between processing and acknowledgement, with

@@ -1,9 +1,30 @@
 import { createServer } from 'node:http';
 import { verify } from './standard.mjs';
 
-export async function startMock({ secret, dedupe = true, verifySignatures = true, verifyFreshness = true } = {}) {
+export async function startMock({ secret, dedupe = true, verifySignatures = true,
+  verifyFreshness = true, unsafeConcurrentDedupe = false } = {}) {
   const seen = new Set();
   let processedCount = 0;
+  const pendingRaces = new Map();
+  function rendezvous(id) {
+    return new Promise((resolve) => {
+      let group = pendingRaces.get(id);
+      if (!group) {
+        group = { waiters: [], timer: null };
+        pendingRaces.set(id, group);
+        // Avoid leaving the local fixture hanging if fewer than four requests arrive.
+        group.timer = setTimeout(() => release(), 1000);
+      }
+      function release() {
+        if (pendingRaces.get(id) !== group) return;
+        clearTimeout(group.timer);
+        pendingRaces.delete(id);
+        for (const waiter of group.waiters) waiter();
+      }
+      group.waiters.push(resolve);
+      if (group.waiters.length === 4) release();
+    });
+  }
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/state') {
@@ -24,7 +45,12 @@ export async function startMock({ secret, dedupe = true, verifySignatures = true
     const accepted = verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'],
       tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY });
     if (verifySignatures && !accepted) { res.writeHead(401); res.end(); return; }
-    if (!dedupe || !seen.has(id)) { processedCount += 1; seen.add(id); }
+    const alreadySeen = seen.has(id);
+    if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {
+      // Broken fixture: every concurrent request reads state before any write.
+      await rendezvous(id);
+    }
+    if (!dedupe || !alreadySeen) { processedCount += 1; seen.add(id); }
     res.writeHead(200); res.end('accepted');
   });
   await new Promise((resolve, reject) => {

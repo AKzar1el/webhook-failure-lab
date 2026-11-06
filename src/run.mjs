@@ -22,7 +22,13 @@ function checkOptions(config, secret) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10000) {
     throw new TypeError('timeoutMs must be between 100 and 10000');
   }
-  return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs };
+  const concurrentDuplicateDeliveries = config.concurrentDuplicateDeliveries;
+  if (concurrentDuplicateDeliveries !== undefined &&
+      (!Number.isInteger(concurrentDuplicateDeliveries) ||
+       concurrentDuplicateDeliveries < 2 || concurrentDuplicateDeliveries > 8)) {
+    throw new TypeError('concurrentDuplicateDeliveries must be an integer between 2 and 8');
+  }
+  return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs, concurrentDuplicateDeliveries };
 }
 
 export async function runLab(config, { secret, request = fetch, clock = () => Math.floor(Date.now() / 1000) } = {}) {
@@ -76,7 +82,29 @@ export async function runLab(config, { secret, request = fetch, clock = () => Ma
   const staleId = `wfl_${randomUUID().replaceAll('-', '')}`;
   await deliver('stale_timestamp', staleId, body, body, now - 3600, false, 0);
 
+  if (options.concurrentDuplicateDeliveries !== undefined) {
+    const raceId = `wfl_race_${randomUUID().replaceAll('-', '')}`;
+    const raceBody = JSON.stringify({ type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: raceId } });
+    const signature = sign({ secret, id: raceId, timestamp: now, body: raceBody });
+    const responses = await Promise.all(Array.from({ length: options.concurrentDuplicateDeliveries }, () =>
+      request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { 'content-type': 'application/json', 'webhook-id': raceId,
+          'webhook-timestamp': String(now), 'webhook-signature': signature },
+        body: raceBody,
+      })));
+    const httpStatuses = responses.map((response) => response.status);
+    const count = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    reports.push({ scenario: 'concurrent_duplicate_delivery',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        count === expectedProcessedCount,
+      httpStatuses, observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
   return { success: reports.every((r) => r.passed), scenarios: reports,
-    coverage: ['valid_delivery', 'duplicate_delivery', 'tampered_body', 'stale_timestamp'],
+    coverage: reports.map((report) => report.scenario),
     caveat: 'processedCount is a user-provided observer, not independently proven business-side-effect correctness' };
 }

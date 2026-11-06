@@ -34,13 +34,19 @@ npm run verify
 
 The four initial scenarios are: valid event (count +1), **duplicate same event ID** (no extra effect), **body tampering after signing** (reject + no effect), and **signed but expired timestamp** (reject + no effect). The CLI exits 0 only if all checks pass, 1 for assertion failures, 2 for bad input/transport errors. Output is machine-readable JSON.
 
+### Optional concurrent duplicate race check
+
+Add `"concurrentDuplicateDeliveries": 4` to the local `lab.json` config to also send four **simultaneous, identically signed** requests using a fresh event ID. The check requires every request to return `successStatus` and the observer count to increase by **exactly one** after all requests finish. The count can be set to an integer from 2 through 8; values outside that range are rejected before any requests are sent. Omitting it retains the original four-scenario behavior.
+
+This detects some non-atomic read/check/write idempotency races that ordinary sequential duplicate tests miss. A deliberately broken, local-only receiver fixture is covered in `tests/integration.test.mjs`, along with a passing secure receiver. Concurrent observation still does **not** establish an exactly-once business-side-effect guarantee; it depends on the receiver's observer accurately reporting committed effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent, or support cross-process exactly-once guarantees.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- This MVP does not support concurrency races, queued retries, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
+- The opt-in check covers concurrent duplicate delivery, not cross-process or crash-safe idempotency. This MVP does not support queued retries, temporal scheduling, out-of-order events, or external production testing. These should be built and verified incrementally rather than advertised prematurely.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

@@ -50,3 +50,37 @@ test('detects receiver accepting stale signed timestamps', async () => {
     assert.ok(result.scenarios.some((r) => r.scenario === 'stale_timestamp' && !r.passed));
   });
 });
+
+test('opt-in concurrent duplicate deliveries preserve a single observable effect', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, concurrentDuplicateDeliveries: 4 }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const race = result.scenarios.find((r) => r.scenario === 'concurrent_duplicate_delivery');
+    assert.equal(race.passed, true);
+    assert.deepEqual(race.httpStatuses, [200, 200, 200, 200]);
+    assert.equal(race.expectedProcessedCount, 2);
+    assert.equal(race.observedProcessedCount, 2);
+  });
+});
+
+test('concurrent duplicate check exposes non-atomic deduplication missed by sequential tests', async () => {
+  await withServer({ unsafeConcurrentDedupe: true }, async (config) => {
+    const result = await runLab({ ...config, concurrentDuplicateDeliveries: 4 }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((r) => r.passed));
+    const race = result.scenarios.find((r) => r.scenario === 'concurrent_duplicate_delivery');
+    assert.equal(race.passed, false);
+    assert.equal(race.expectedProcessedCount, 2);
+    assert.equal(race.observedProcessedCount, 5);
+  });
+});
+
+test('concurrent duplicate delivery count must be an integer between two and eight', async () => {
+  await withServer({}, async (config) => {
+    for (const concurrentDuplicateDeliveries of [-1, 0, 1, 9, 2.5, '4', true]) {
+      await assert.rejects(() => runLab({ ...config, concurrentDuplicateDeliveries }, { secret }),
+        /concurrentDuplicateDeliveries/);
+    }
+  });
+});
