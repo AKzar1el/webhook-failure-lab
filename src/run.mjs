@@ -134,7 +134,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
     restartAfterCommit, crashAfterPersist,
-    retentionWindowSeconds, versionedOutOfOrderUpdates };
+    retentionWindowSeconds };
 }
 
 export async function runLab(config, { secret, previousSecret, retiredSecret,
@@ -330,6 +330,46 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         retry.status === options.successStatus && count === expectedProcessedCount,
       firstAttemptOutcome, observedCountAfterLostAck, retryHttpStatus: retry.status,
       observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (config.versionedOutOfOrderUpdates) {
+    const resourceId = `wfl_version_resource_${randomUUID().replaceAll('-', '')}`;
+    const makeVersion = (version) => {
+      const messageId = `wfl_version_event_${randomUUID().replaceAll('-', '')}`;
+      const rawBody = JSON.stringify({ type: 'test.resource.versioned',
+        data: { id: resourceId, version } });
+      return { rawBody, headers: { 'content-type': 'application/json',
+        'webhook-id': messageId, 'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: messageId, timestamp: now, body: rawBody }) } };
+    };
+    const send = (event) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: event.headers, body: event.rawBody,
+    });
+    // A delayed v2 is a new authenticated event, not a duplicate of v3.
+    const first = await send(makeVersion(1));
+    const afterFirst = await observeState(resourceId);
+    const newest = await send(makeVersion(3));
+    const afterNewest = await observeState(resourceId);
+    const late = await send(makeVersion(2));
+    const afterLate = await observeState(resourceId);
+    const httpStatuses = [first.status, newest.status, late.status];
+    const observedCounts = [afterFirst.processedCount, afterNewest.processedCount,
+      afterLate.processedCount];
+    const observedResourceVersions = [afterFirst.resourceVersion ?? null,
+      afterNewest.resourceVersion ?? null, afterLate.resourceVersion ?? null];
+    const expectedProcessedCount = expectedCount + 2;
+    reports.push({ scenario: 'versioned_out_of_order_update',
+      passed: httpStatuses[0] === options.successStatus &&
+        httpStatuses[1] === options.successStatus && httpStatuses[2] === 409 &&
+        observedCounts[0] === expectedCount + 1 &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedResourceVersions[0] === 1 &&
+        observedResourceVersions[1] === 3 &&
+        observedResourceVersions[2] === 3,
+      httpStatuses, observedCounts, observedResourceVersions, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
@@ -770,46 +810,6 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         options.rejectionStatuses.includes(httpStatuses[2]) &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
-    expectedCount = expectedProcessedCount;
-  }
-
-  if (options.versionedOutOfOrderUpdates) {
-    const resourceId = `wfl_version_resource_${randomUUID().replaceAll('-', '')}`;
-    const makeVersion = (version) => {
-      const messageId = `wfl_version_event_${randomUUID().replaceAll('-', '')}`;
-      const rawBody = JSON.stringify({ type: 'test.resource.versioned',
-        data: { id: resourceId, version } });
-      return { rawBody, headers: { 'content-type': 'application/json',
-        'webhook-id': messageId, 'webhook-timestamp': String(now),
-        'webhook-signature': sign({ secret, id: messageId, timestamp: now, body: rawBody }) } };
-    };
-    const send = (event) => request(options.endpoint, {
-      method: 'POST', redirect: 'manual', signal: timeout(),
-      headers: event.headers, body: event.rawBody,
-    });
-    // A delayed v2 is a new authenticated event, not a duplicate of v3.
-    const first = await send(makeVersion(1));
-    const afterFirst = await observeState(resourceId);
-    const newest = await send(makeVersion(3));
-    const afterNewest = await observeState(resourceId);
-    const late = await send(makeVersion(2));
-    const afterLate = await observeState(resourceId);
-    const httpStatuses = [first.status, newest.status, late.status];
-    const observedCounts = [afterFirst.processedCount, afterNewest.processedCount,
-      afterLate.processedCount];
-    const observedResourceVersions = [afterFirst.resourceVersion ?? null,
-      afterNewest.resourceVersion ?? null, afterLate.resourceVersion ?? null];
-    const expectedProcessedCount = expectedCount + 2;
-    reports.push({ scenario: 'versioned_out_of_order_update',
-      passed: httpStatuses[0] === options.successStatus &&
-        httpStatuses[1] === options.successStatus && httpStatuses[2] === 409 &&
-        observedCounts[0] === expectedCount + 1 &&
-        observedCounts[1] === expectedProcessedCount &&
-        observedCounts[2] === expectedProcessedCount &&
-        observedResourceVersions[0] === 1 &&
-        observedResourceVersions[1] === 3 &&
-        observedResourceVersions[2] === 3,
-      httpStatuses, observedCounts, observedResourceVersions, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

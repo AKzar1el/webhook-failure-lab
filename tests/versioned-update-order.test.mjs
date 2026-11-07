@@ -81,10 +81,10 @@ test('versioned check composes with the existing prerequisite ordering check', a
       versionedOutOfOrderUpdates: true }, { secret });
     assert.equal(result.success, true);
     assert.equal(result.scenarios.length, 6);
-    assert.equal(result.scenarios[4].scenario, 'out_of_order_state_transition');
-    const report = result.scenarios[5];
+    assert.equal(result.scenarios[5].scenario, 'out_of_order_state_transition');
+    const report = result.scenarios[4];
     assert.deepEqual(report.httpStatuses, [200, 200, 409]);
-    assert.deepEqual(report.observedCounts, [4, 5, 5]);
+    assert.deepEqual(report.observedCounts, [2, 3, 3]);
     assert.deepEqual(report.observedResourceVersions, [1, 3, 3]);
   });
 });
