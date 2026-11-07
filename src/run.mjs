@@ -38,6 +38,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (retryAfterTransientFailure !== undefined && typeof retryAfterTransientFailure !== 'boolean') {
     throw new TypeError('retryAfterTransientFailure must be a boolean');
   }
+  const retryAfterCommittedError = config.retryAfterCommittedError;
+  if (retryAfterCommittedError !== undefined && typeof retryAfterCommittedError !== 'boolean') {
+    throw new TypeError('retryAfterCommittedError must be a boolean');
+  }
   const lostAckAfterCommit = config.lostAckAfterCommit;
   if (lostAckAfterCommit !== undefined && typeof lostAckAfterCommit !== 'boolean') {
     throw new TypeError('lostAckAfterCommit must be a boolean');
@@ -119,7 +123,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
-    retryAfterTransientFailure, lostAckAfterCommit,
+    retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
     outOfOrderStateTransitions, secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
@@ -322,6 +326,32 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         retry.status === options.successStatus && count === expectedProcessedCount,
       firstAttemptOutcome, observedCountAfterLostAck, retryHttpStatus: retry.status,
       observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.retryAfterCommittedError) {
+    const retryId = `wfl_committed503_${randomUUID().replaceAll('-', '')}`;
+    const retryBody = JSON.stringify({ type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: retryId } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': retryId,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id: retryId, timestamp: now, body: retryBody }) };
+    // A valid delivery can commit successfully even when the HTTP response is 503.
+    const first = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { ...headers, 'x-wfl-test-fault': 'commit-then-respond-503-once' }, body: retryBody,
+    });
+    const firstCount = await observe();
+    const retry = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: retryBody,
+    });
+    const retryCount = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    reports.push({ scenario: 'retry_after_committed_503',
+      passed: first.status === 503 && firstCount === expectedProcessedCount &&
+        retry.status === options.successStatus && retryCount === expectedProcessedCount,
+      httpStatuses: [first.status, retry.status], observedCounts: [firstCount, retryCount],
+      expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
