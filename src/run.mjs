@@ -27,6 +27,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectMalformedSignedPayload !== 'boolean') {
     throw new TypeError('rejectMalformedSignedPayload must be a boolean');
   }
+  const rejectWrongContentTypeRetry = config.rejectWrongContentTypeRetry;
+  if (rejectWrongContentTypeRetry !== undefined &&
+      typeof rejectWrongContentTypeRetry !== 'boolean') {
+    throw new TypeError('rejectWrongContentTypeRetry must be a boolean');
+  }
   const retryAfterRejectedSignature = config.retryAfterRejectedSignature;
   if (retryAfterRejectedSignature !== undefined &&
       typeof retryAfterRejectedSignature !== 'boolean') {
@@ -163,6 +168,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
+    rejectWrongContentTypeRetry,
     retryAfterRejectedSignature,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
@@ -268,6 +274,38 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         httpStatuses[1] === options.successStatus &&
         observedCounts[0] === expectedCount &&
         observedCounts[1] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectWrongContentTypeRetry) {
+    const mediaId = `wfl_media_${randomUUID().replaceAll('-', '')}`;
+    const mediaBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: mediaId } });
+    const signature = sign({ secret, id: mediaId, timestamp: now, body: mediaBody });
+    const send = (contentType) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': contentType, 'webhook-id': mediaId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: mediaBody,
+    });
+    // Changing the unsigned media type must not turn a rejected ID into a duplicate.
+    const invalid = await send('text/plain');
+    const afterInvalid = await observe();
+    const corrected = await send('application/json');
+    const afterCorrected = await observe();
+    const replay = await send('application/json');
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, corrected.status, replay.status];
+    const observedCounts = [afterInvalid, afterCorrected, afterReplay];
+    reports.push({ scenario: 'wrong_content_type_retry',
+      passed: httpStatuses[0] === 415 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
