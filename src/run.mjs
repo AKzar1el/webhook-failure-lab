@@ -50,6 +50,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (secretRotation !== undefined && typeof secretRotation !== 'boolean') {
     throw new TypeError('secretRotation must be a boolean');
   }
+  const rejectRetiredKeyDuplicate = config.rejectRetiredKeyDuplicate;
+  if (rejectRetiredKeyDuplicate !== undefined && typeof rejectRetiredKeyDuplicate !== 'boolean') {
+    throw new TypeError('rejectRetiredKeyDuplicate must be a boolean');
+  }
   const conflictingEventIdPayload = config.conflictingEventIdPayload;
   if (conflictingEventIdPayload !== undefined && typeof conflictingEventIdPayload !== 'boolean') {
     throw new TypeError('conflictingEventIdPayload must be a boolean');
@@ -102,7 +106,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (retentionWindowSeconds !== undefined && (crashAfterPersist || restartAfterCommit)) {
     throw new TypeError('retentionWindowSeconds and process controllers require separate runs');
   }
-  if (secretRotation) {
+  if (secretRotation || rejectRetiredKeyDuplicate) {
     keyFromSecret(previousSecret);
     keyFromSecret(retiredSecret);
     if (new Set([secret, previousSecret, retiredSecret]).size !== 3) {
@@ -112,7 +116,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload,
+    outOfOrderStateTransitions, secretRotation, rejectRetiredKeyDuplicate, conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
@@ -388,6 +392,34 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         options.rejectionStatuses.includes(httpStatuses[1]) &&
         observedCounts[0] === expectedProcessedCount &&
         observedCounts[1] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectRetiredKeyDuplicate) {
+    const duplicateId = `wfl_revokeddup_${randomUUID().replaceAll('-', '')}`;
+    const duplicateBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: duplicateId } });
+    // Retiring a key must invalidate its HMAC even when the ID is already in the dedupe cache.
+    const send = (signingSecret) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': duplicateId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret: signingSecret, id: duplicateId,
+          timestamp: now, body: duplicateBody }) },
+      body: duplicateBody,
+    });
+    const original = await send(previousSecret);
+    const afterOriginal = await observe();
+    const revoked = await send(retiredSecret);
+    const afterRevoked = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [original.status, revoked.status];
+    const observedCounts = [afterOriginal, afterRevoked];
+    reports.push({ scenario: 'retired_key_cached_duplicate',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
