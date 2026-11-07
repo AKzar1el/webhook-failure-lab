@@ -61,6 +61,20 @@ const server = createServer(async (req, res) => {
       signature: req.headers['webhook-signature'], tolerance: 300,
     });
     if (!valid) { res.writeHead(401); res.end(); return; }
+    if (req.headers['x-wfl-test-fault'] === 'crash-before-commit' &&
+        typeof id === 'string' && id.startsWith('wfl_precrash_') &&
+        process.env.WFL_TEST_IGNORE_PRECRASH !== '1') {
+      // Healthy pre-commit crash: no durable count or dedupe write takes place.
+      if (process.env.WFL_TEST_PRECRASH_POISON_DEDUPE === '1') {
+        seen.add(id);
+        await persist();
+      }
+      if (process.env.WFL_TEST_PRECRASH_EXTRA_EFFECT === '1') {
+        processedCount++;
+        await persist();
+      }
+      process.exit(48);
+    }
     if (req.headers['x-wfl-test-fault'] === 'persist-then-crash-before-ack' &&
         typeof id === 'string' && id.startsWith('wfl_crash_') &&
         process.env.WFL_TEST_IGNORE_CRASH !== '1') {

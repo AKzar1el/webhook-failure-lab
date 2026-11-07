@@ -23,7 +23,8 @@ async function withServer(options, fn) {
 
 function launchRestartReceiver(statePath, {
   forgetDedupe = false, crashLoseDedupe = false, crashLoseCount = false,
-  ignoreCrashFault = false, startupDelayMs = 0, suppressReady = false,
+  ignoreCrashFault = false, preCrashPoisonDedupe = false, preCrashExtraEffect = false,
+  ignorePreCrashFault = false, startupDelayMs = 0, suppressReady = false,
   startupTimeoutMs = 10000,
 } = {}) {
   return new Promise((resolve, reject) => {
@@ -34,6 +35,9 @@ function launchRestartReceiver(statePath, {
           WFL_TEST_CRASH_LOSE_DEDUPE: crashLoseDedupe ? '1' : '0',
           WFL_TEST_CRASH_LOSE_COUNT: crashLoseCount ? '1' : '0',
           WFL_TEST_IGNORE_CRASH: ignoreCrashFault ? '1' : '0',
+          WFL_TEST_PRECRASH_POISON_DEDUPE: preCrashPoisonDedupe ? '1' : '0',
+          WFL_TEST_PRECRASH_EXTRA_EFFECT: preCrashExtraEffect ? '1' : '0',
+          WFL_TEST_IGNORE_PRECRASH: ignorePreCrashFault ? '1' : '0',
           WFL_TEST_STARTUP_DELAY_MS: String(startupDelayMs),
           WFL_TEST_SUPPRESS_READY: suppressReady ? '1' : '0' } });
     let stderr = '';
@@ -97,6 +101,8 @@ async function withRestartReceiver({ forgetDedupeOnRestart = false } = {}, fn) {
 
 async function withCrashReceiver({
   loseDedupeOnCrash = false, loseCountOnCrash = false, ignoreCrashFault = false,
+  beforeCommit = false, preCrashPoisonDedupe = false, preCrashExtraEffect = false,
+  ignorePreCrashFault = false,
 } = {}, fn) {
   const directory = await mkdtemp(join(tmpdir(), 'wfl-crash-'));
   const statePath = join(directory, 'durable.json');
@@ -106,6 +112,9 @@ async function withCrashReceiver({
       crashLoseDedupe: loseDedupeOnCrash,
       crashLoseCount: loseCountOnCrash,
       ignoreCrashFault,
+      preCrashPoisonDedupe,
+      preCrashExtraEffect,
+      ignorePreCrashFault,
     });
     const config = live.config;
     const recoverReceiver = async () => {
@@ -121,7 +130,8 @@ async function withCrashReceiver({
           oldChild.once('exit', onExit);
         });
       }
-      assert.equal(oldChild.exitCode, 47, 'Fixture must terminate abruptly with crash exit code');
+      assert.equal(oldChild.exitCode, beforeCommit ? 48 : 47,
+        'Fixture must terminate abruptly with the expected crash exit code');
       live = await launchRestartReceiver(statePath);
       assert.notEqual(live.child.pid, oldPid, 'Recovery must launch a new OS process');
       return live.config;
@@ -683,6 +693,88 @@ test('crash recovery controller cannot return a non-loopback destination', async
       { secret, recoverReceiver: async () => ({
         endpoint: 'https://example.com/webhook', observer: config.observer,
       }) }), /loopback/i);
+  });
+});
+
+test('precommit crash leaves no reserved ID and corrected retry commits exactly once', async () => {
+  await withCrashReceiver({ beforeCommit: true }, async (config, recoverReceiver) => {
+    const result = await runLab({ ...config, crashBeforeCommit: true }, { secret, recoverReceiver });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const crash = result.scenarios.at(-1);
+    assert.equal(crash.scenario, 'crash_before_commit_retry');
+    assert.equal(crash.firstAttemptOutcome, 'transport_error');
+    assert.equal(crash.retryHttpStatus, 200);
+    assert.equal(crash.replayHttpStatus, 200);
+    assert.deepEqual(crash.observedCounts, [1, 1, 2, 2]);
+    assert.notEqual(crash.receiverInstanceIds[0], crash.receiverInstanceIds[1]);
+    assert.equal(crash.expectedProcessedCount, 2);
+  });
+});
+
+test('precommit crash detects dedupe key persisted without a business effect', async () => {
+  await withCrashReceiver({ beforeCommit: true, preCrashPoisonDedupe: true },
+    async (config, recoverReceiver) => {
+      const result = await runLab({ ...config, crashBeforeCommit: true },
+        { secret, recoverReceiver });
+      assert.equal(result.success, false);
+      const crash = result.scenarios.at(-1);
+      assert.equal(crash.scenario, 'crash_before_commit_retry');
+      assert.deepEqual(crash.observedCounts, [1, 1, 1, 1]);
+      assert.equal(crash.passed, false);
+    });
+});
+
+test('precommit crash detects effect persisted before the simulated crash', async () => {
+  await withCrashReceiver({ beforeCommit: true, preCrashExtraEffect: true },
+    async (config, recoverReceiver) => {
+      const result = await runLab({ ...config, crashBeforeCommit: true },
+        { secret, recoverReceiver });
+      assert.equal(result.success, false);
+      const crash = result.scenarios.at(-1);
+      assert.deepEqual(crash.observedCounts, [1, 2, 3, 3]);
+      assert.equal(crash.passed, false);
+    });
+});
+
+test('precommit crash fails if the receiver acknowledges instead of terminating', async () => {
+  await withCrashReceiver({ beforeCommit: true, ignorePreCrashFault: true }, async (config) => {
+    const result = await runLab({ ...config, crashBeforeCommit: true },
+      { secret, recoverReceiver: async () => config });
+    assert.equal(result.success, false);
+    assert.equal(result.scenarios.at(-1).firstAttemptOutcome, 'http_200');
+    assert.equal(result.scenarios.at(-1).passed, false);
+  });
+});
+
+test('precommit crash must validate opt-in and real recovery controller', async () => {
+  await withServer({}, async (config) => {
+    for (const crashBeforeCommit of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, crashBeforeCommit }, { secret }),
+        /crashBeforeCommit/);
+    }
+    await assert.rejects(() => runLab({ ...config, crashBeforeCommit: true }, { secret }),
+      /recoverReceiver/);
+    await assert.rejects(() => runLab({
+      ...config, crashBeforeCommit: true, crashAfterPersist: true,
+    }, { secret, recoverReceiver: async () => config }), /separate runs/);
+    await assert.rejects(() => runLab({
+      ...config, crashBeforeCommit: true, restartAfterCommit: true,
+    }, { secret, recoverReceiver: async () => config, restartReceiver: async () => config }),
+    /separate runs/);
+    await assert.rejects(() => runLab({
+      ...config, crashBeforeCommit: true, retentionWindowSeconds: 60,
+    }, { secret, recoverReceiver: async () => config }), /separate runs/);
+  });
+});
+
+test('precommit crash recovery refuses a non-loopback callback destination', async () => {
+  await withCrashReceiver({ beforeCommit: true }, async (config, recoverReceiver) => {
+    await assert.rejects(() => runLab({ ...config, crashBeforeCommit: true },
+      { secret, recoverReceiver: async () => {
+        const recovered = await recoverReceiver();
+        return { ...recovered, endpoint: 'https://example.com/webhook' };
+      } }), /loopback/i);
   });
 });
 

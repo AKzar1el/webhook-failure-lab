@@ -324,6 +324,29 @@ This is a **post-rename process-exit** contract, not a proof of power-loss
 durability, fsync, a torn multi-write database transaction, or external
 exactly-once effects. Both recovery controller and observer are user-supplied.
 
+### Opt-in crash before committing a signed delivery
+
+Use `crashBeforeCommit: true` only with the **programmatic** `runLab` API
+and a local process-controller `recoverReceiver` callback. For a fresh,
+correctly signed `wfl_precrash_` event, the lab sends the development-only
+`x-wfl-test-fault: crash-before-commit` header. The receiver must terminate
+without an HTTP acknowledgement **before** persisting either the effect or its
+deduplication record. The callback must observe the exit, launch a new process
+against the same state and return loopback `{ endpoint, observer }` URLs.
+
+The lab expects a transport error, a different `receiverInstanceId`, and an
+unchanged `processedCount` after recovery. A signed retry must then commit
+exactly once, while an identical replay must not commit again. The actual
+localhost child-process fixture exits with code 48; broken variants persist
+only the deduplication ID or an effect counter before crashing, and both fail.
+Ignoring the fault or returning a non-loopback recovery URL also fails.
+
+The JSON CLI cannot control local processes. Run this scenario separately
+from the other restart/crash probes and retention-clock tests. Never expose
+the fault adapter on a public receiver. This is a controlled pre-write
+process exit, not a proof of transaction atomicity under power loss, fsync
+durability, or any unobserved business side effect.
+
 ### Opt-in deduplication retention and stale replay boundary
 
 Use `retentionWindowSeconds: 60` (integer 2-240) with the **programmatic**
