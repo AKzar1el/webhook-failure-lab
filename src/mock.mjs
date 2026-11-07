@@ -5,6 +5,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
   unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
+  unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
@@ -23,6 +24,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   const resourceStates = new Map();
   let processedCount = 0;
   const pendingRaces = new Map();
+  let distinctBatchCommitted = false;
   function rendezvous(id) {
     return new Promise((resolve) => {
       let group = pendingRaces.get(id);
@@ -178,6 +180,18 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       }
       res.destroy();
       return;
+    }
+    if ((unsafeCoalesceDistinctEvents || unsafeRejectConcurrentDistinct) &&
+        typeof id === 'string' && id.startsWith('wfl_unique_')) {
+      // Broken global in-flight lock: unrelated IDs are wrongly treated as one batch.
+      await rendezvous('wfl_distinct_broken_batch');
+      if (!distinctBatchCommitted) {
+        distinctBatchCommitted = true;
+        processedCount += 1; seen.add(id);
+        res.writeHead(200); res.end('accepted'); return;
+      }
+      res.writeHead(unsafeRejectConcurrentDistinct ? 503 : 200);
+      res.end('dropped distinct event'); return;
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {

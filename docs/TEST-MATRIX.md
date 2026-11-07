@@ -13,6 +13,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Modified body after signing | Reject; observer state unchanged | Local smoke |
 | Stale signed timestamp | Reject; observer state unchanged | Local smoke |
 | Concurrent copies of one freshly signed event (opt-in) | All acknowledged; observer count rises exactly once | Local integration test, plus deliberately non-atomic negative receiver fixture |
+| Concurrent independently signed events with distinct IDs (opt-in) | All acknowledged; observer count increases once per unique event | Local integration tests with deliberately broken global-coalescing and busy-rejection fixtures |
 | First delivery rejected with injected HTTP 503, then same signed event retried (opt-in) | First attempt leaves observer unchanged; retry succeeds and increments it once | Local integration test, plus fixture that marks rejected events as processed |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
@@ -36,6 +37,16 @@ must return 503 **before processing** when the first request contains
 `x-wfl-test-fault: reject-before-process-once`; the lab then resends the same
 signed event without that header. Receivers without this explicit test adapter
 fail the first-status assertion. Do not enable the adapter on public services.
+Add `"concurrentDistinctDeliveries": 4` (integer 2-8) for a separate
+**distinct-event concurrency** check. The harness concurrently sends N
+independently signed, fresh events with different webhook IDs and payload IDs;
+every request must return `successStatus`, and the observer must increase by N
+effects. This complements the *same-ID* race test, which expects only one effect
+from N deliveries. The local negative fixtures model a global in-flight lock
+that either silently acknowledges and loses N-1 distinct events or returns 503
+for them; both must fail. The test uses bounded in-process fan-out and does not
+assert throughput, fairness, real provider behavior, or external exactly-once
+effects. The option is independent and can be combined with other checks.
 Add `"lostAckAfterCommit": true` for a separate scenario using
 `x-wfl-test-fault: commit-then-drop-ack-once`. The local-only adapter must
 commit an event and its deduplication record before closing the socket without
