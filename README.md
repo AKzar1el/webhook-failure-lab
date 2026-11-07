@@ -261,6 +261,23 @@ clock change or external traffic. The contract assumes a receiver using a
 clocks; significant local clock skew can fail the check even if the HMAC
 implementation is correct. It does not prove any unobserved business effects.
 
+### Opt-in exact signed-timestamp header check
+
+Add `"rejectNoncanonicalTimestamp": true` to `lab.json` to detect receivers
+that parse the signed `webhook-timestamp` as a number **before verifying its
+original bytes**. The runner signs two independent synthetic events using a
+fresh canonical integer timestamp, then alters only their transmitted timestamp
+headers to a leading-zero form and a decimal `.0` form. Although those strings
+convert to the same number, neither is authenticated by the original HMAC.
+Both deliveries must be rejected with a configured 4xx status and cause no
+observed effect. No body or signing key is changed.
+
+The built-in verifier now rejects noncanonical timestamp strings instead of
+silently normalizing them. Two deliberately broken local receivers prove the
+probe catches normalized-header acceptance and rejection after committing.
+This does not impose rules on other webhook protocols, prove real provider
+formatting, or establish exactly-once external business effects.
+
 ### Opt-in authenticate-before-deduplication check
 
 Add `"rejectTamperedDuplicateSignature": true` to `lab.json` to check a
