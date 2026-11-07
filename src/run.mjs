@@ -27,6 +27,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
       typeof rejectMalformedSignedPayload !== 'boolean') {
     throw new TypeError('rejectMalformedSignedPayload must be a boolean');
   }
+  const caseSensitiveEventIds = config.caseSensitiveEventIds;
+  if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
+    throw new TypeError('caseSensitiveEventIds must be a boolean');
+  }
   const concurrentDuplicateDeliveries = config.concurrentDuplicateDeliveries;
   if (concurrentDuplicateDeliveries !== undefined &&
       (!Number.isInteger(concurrentDuplicateDeliveries) ||
@@ -149,7 +153,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
-    concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
+    concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
     rejectFutureSignedTimestamp, rejectNoncanonicalTimestamp,
     rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
@@ -743,6 +747,37 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
+  }
+
+  if (options.caseSensitiveEventIds) {
+    const rootId = `wfl_case_${randomUUID().replaceAll('-', '')}`;
+    const ids = [`${rootId}_a`, `${rootId}_A`];
+    const send = (eventId) => {
+      const rawBody = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+      return request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+          'webhook-timestamp': String(now),
+          'webhook-signature': sign({ secret, id: eventId, timestamp: now, body: rawBody }) },
+        body: rawBody,
+      });
+    };
+    // Only the ASCII-case variant differs: each authentic ID is independently deliverable.
+    const httpStatuses = [];
+    const observedCounts = [];
+    for (const eventId of [ids[0], ids[1], ids[0], ids[1]]) {
+      const response = await send(eventId);
+      httpStatuses.push(response.status);
+      observedCounts.push(await observe());
+    }
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'case_sensitive_event_ids',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count, index) => count === expectedCounts[index]),
+      httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
   }
 
   if (options.resignedDuplicateDelivery) {

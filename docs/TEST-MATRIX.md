@@ -8,6 +8,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 
 | Scenario | Expected receiver behavior | Current evidence |
 | --- | --- | --- |
+| Two independently signed IDs differing only in ASCII case, then exact retries (opt-in) | Both new IDs accepted and committed once each; exact retries acknowledged without additional observed effects | Local negative fixtures lowercase the dedupe key or reject the case variant as a collision |
 | Malformed JSON with valid HMAC, then corrected same-ID signed retry (opt-in) | First delivery rejected as invalid JSON without effect or dedupe record; corrected independently signed JSON with same ID accepted and applied exactly once | Local negative receivers accept the malformed body, poison the dedupe cache on reject, or commit before returning 400 |
 | First valid signed delivery | Accept once; observer count becomes one | Local smoke |
 | Same event ID delivered twice | Acknowledge without repeated business side effect | Local smoke |
@@ -198,6 +199,17 @@ The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
 exactly-once delivery guarantee.
+
+Enable `"caseSensitiveEventIds": true` to test an explicit case-sensitive,
+opaque event-ID contract. Two independent event IDs differ only in their final
+ASCII `a` or `A`, and both are HMAC-authenticated over the exact ID and
+their own raw JSON bodies. Both must return `successStatus` and increase the
+observer count once. Exact signed retries of both IDs must be acknowledged
+without another effect. Negative local receivers that lowercase deduplication
+keys either silently drop the second event or return 409 for it; both fail.
+This rule is opt-in because provider-specific ID semantics can differ. It
+asserts only the synthetic receiver's exposed processed count, never
+unobserved business effects.
 
 Enable `"rejectMalformedSignedPayload": true` to verify that authenticated
 bytes still undergo JSON syntax validation **before** any idempotency write.

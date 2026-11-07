@@ -18,6 +18,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
+  unsafeCaseFoldEventIds = false, unsafeRejectCaseVariantEventId = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
   unsafeAcknowledgeRetiredDuplicate = false, unsafeCommitRetiredDuplicateBeforeReject = false,
@@ -35,6 +36,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   const seenAt = new Map();
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
+  const caseFoldedIds = new Map();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
   const committed503Ids = new Set();
@@ -204,6 +206,20 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         }
         res.writeHead(400); res.end('unparseable JSON'); return;
       }
+    }
+    if ((unsafeCaseFoldEventIds || unsafeRejectCaseVariantEventId) &&
+        typeof id === 'string' && id.startsWith('wfl_case_')) {
+      const foldedId = id.toLowerCase();
+      const firstId = caseFoldedIds.get(foldedId);
+      if (firstId !== undefined) {
+        // Broken receivers treat two distinct authenticated IDs as one dedupe key.
+        res.writeHead(unsafeRejectCaseVariantEventId && firstId !== id ? 409 : 200);
+        res.end('case-folded ID collision'); return;
+      }
+      caseFoldedIds.set(foldedId, id);
+      seen.add(id);
+      processedCount += 1;
+      res.writeHead(200); res.end('accepted'); return;
     }
     if (typeof id === 'string' && id.startsWith('wfl_conflict_')) {
       const priorBody = seenConflictBodies.get(id);
