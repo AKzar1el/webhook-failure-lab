@@ -150,6 +150,27 @@ after an ID has already been accepted**. The receiver must enforce the
 declared key policy; the test cannot prove when a real provider retires a key,
 unobserved side effects, or externally guaranteed exactly-once behavior.
 
+### Optional versioned out-of-order update check
+
+Set `"versionedOutOfOrderUpdates": true` in local `lab.json` to verify that
+a **new, correctly signed but older resource update** cannot roll back a newer
+committed version. A development-only receiver adapter must accept synthetic
+`test.resource.versioned` events with `data.id` and positive integer
+`data.version`; `GET /state?resourceId=<id>` must report its non-negative
+integer `resourceVersion` alongside `processedCount`.
+
+The runner sends three **different authenticated event IDs** for the same
+resource, in version order **1, 3, 2**. Versions 1 and 3 must return
+`successStatus`, each committing one observed effect; delayed version 2
+must return **409 Conflict** without committing an effect or changing the
+reported resource version from 3. The local negative fixtures catch both
+accepting/applying the stale update and returning 409 **after** applying it.
+If the adapter or version observer is absent, the test fails rather than
+claiming success. It composes with the prerequisite-activation ordering test
+but is independent: no version-gapping or mandatory contiguous sequence is
+assumed. This opt-in tests the declared monotonic-version application
+contract, not real provider ordering or externally verified side effects.
+
 ### Opt-in receiver-process restart and durable idempotency check
 
 Use `restartAfterCommit: true` with the **programmatic** `runLab` API and an

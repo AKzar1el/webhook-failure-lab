@@ -27,7 +27,9 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeCommitInvalidMultiSignatureBeforeReject = false,
   unsafeNormalizeTimestamp = false, unsafeCommitNoncanonicalBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
-  unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
+  unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false,
+  supportVersionedUpdates = true, unsafeApplyStaleVersionedUpdate = false,
+  unsafeCommitStaleVersionBeforeReject = false } = {}) {
   const seen = new Set();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
@@ -36,6 +38,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   const lostAckIds = new Set();
   const committed503Ids = new Set();
   const resourceStates = new Map();
+  const resourceVersions = new Map();
   let processedCount = 0;
   const pendingRaces = new Map();
   let distinctBatchCommitted = false;
@@ -65,7 +68,9 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       const resourceId = url.searchParams.get('resourceId');
       res.end(JSON.stringify({ processedCount,
         ...(resourceId && supportOrderTransitions
-          ? { resourceState: resourceStates.get(resourceId) ?? 'missing' } : {}) }));
+          ? { resourceState: resourceStates.get(resourceId) ?? 'missing' } : {}),
+        ...(resourceId && supportVersionedUpdates
+          ? { resourceVersion: resourceVersions.get(resourceId) ?? 0 } : {}) }));
       return;
     }
     if (req.method !== 'POST' || url.pathname !== '/webhook') {
@@ -301,6 +306,31 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       }
       res.writeHead(unsafeRejectConcurrentDistinct ? 503 : 200);
       res.end('dropped distinct event'); return;
+    }
+    if (supportVersionedUpdates && typeof id === 'string' && id.startsWith('wfl_version_event_')) {
+      let event;
+      try { event = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
+      const resourceId = event?.data?.id;
+      const version = event?.data?.version;
+      if (event?.type !== 'test.resource.versioned' ||
+          typeof resourceId !== 'string' || !resourceId.startsWith('wfl_version_resource_') ||
+          !Number.isSafeInteger(version) || version <= 0) {
+        res.writeHead(400); res.end(); return;
+      }
+      if (seen.has(id)) { res.writeHead(200); res.end('accepted duplicate'); return; }
+      const stale = version <= (resourceVersions.get(resourceId) ?? 0);
+      if (stale && !unsafeApplyStaleVersionedUpdate &&
+          !unsafeCommitStaleVersionBeforeReject) {
+        res.writeHead(409); res.end('stale resource version'); return;
+      }
+      if (!stale || unsafeApplyStaleVersionedUpdate || unsafeCommitStaleVersionBeforeReject) {
+        resourceVersions.set(resourceId, version);
+        processedCount += 1;
+        seen.add(id);
+      }
+      res.writeHead(stale && !unsafeApplyStaleVersionedUpdate ? 409 : 200);
+      res.end(stale ? 'stale resource version' : 'version accepted');
+      return;
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {

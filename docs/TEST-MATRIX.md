@@ -13,6 +13,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Same event ID delivered twice | Acknowledge without repeated business side effect | Local smoke |
 | Modified body after signing | Reject; observer state unchanged | Local smoke |
 | Stale signed timestamp | Reject; observer state unchanged | Local smoke |
+| Older distinct signed resource-version update delivered after a newer version (opt-in) | Signed versions 1 and 3 are accepted; delayed signed version 2 receives 409 with no additional effect and observed version remains 3 | Synthetic adapter and local negative receivers that apply stale versions or reject only after committing |
 | Concurrent copies of one freshly signed event (opt-in) | All acknowledged; observer count rises exactly once | Local integration test, plus deliberately non-atomic negative receiver fixture |
 | Concurrent independently signed events with distinct IDs (opt-in) | All acknowledged; observer count increases once per unique event | Local integration tests with deliberately broken global-coalescing and busy-rejection fixtures |
 | First delivery rejected with injected HTTP 503, then same signed event retried (opt-in) | First attempt leaves observer unchanged; retry succeeds and increments it once | Local integration test, plus fixture that marks rejected events as processed |
@@ -333,3 +334,19 @@ deliberately broken receiver, not merely that the happy path passes.
 - Keep raw webhook signing keys and local `.revenue-shot/` state outside Git.
 - For CI integration, make negative scenarios fail the process with a
   nonzero exit code and preserve machine-readable evidence.
+
+## Versioned update-order contract (opt-in)
+
+Enable `"versionedOutOfOrderUpdates": true` for a **monotonic resource-version**
+contract. A local-only adapter must recognize three separately signed
+`test.resource.versioned` events with the same `data.id` and integer
+versions 1, 3, then 2. Accept 1 and 3 with `successStatus`, then reject
+delayed 2 with HTTP **409**, leaving both `processedCount` and the reported
+`resourceVersion` unchanged at 3. The observer must include a non-negative
+integer `resourceVersion` in `GET /state?resourceId=<id>`; missing
+instrumentation fails the scenario. A correct receiver may skip intermediate
+version numbers and must not treat the late event as an already-seen ID. Two
+negative fixtures apply the stale version outright or reject it only after
+recording another effect. Boolean options are validated before any request.
+This is independent of creation/activation order and does not guarantee
+external exactly-once effects or provider version semantics.
