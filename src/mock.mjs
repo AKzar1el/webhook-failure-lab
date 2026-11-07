@@ -13,6 +13,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
   unsafeRejectJsonCharset = false, unsafeDedupeByContentType = false,
+  unsafeCanonicalizeRawJsonBeforeVerify = false,
+  unsafeAcknowledgeRawJsonBeforeAuth = false, unsafeCommitRawJsonBeforeReject = false,
   unsafeCacheRejectedSignature = false, unsafeCommitRejectedSignature = false,
   unsafeAcceptRejectedSignature = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -129,6 +131,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       // Broken receiver acknowledges known IDs before verifying the incoming HMAC.
       res.writeHead(200); res.end('accepted duplicate'); return;
     }
+    const rawJsonProbe = typeof id === 'string' && id.startsWith('wfl_rawjson_');
+    if (unsafeAcknowledgeRawJsonBeforeAuth && rawJsonProbe && seen.has(id)) {
+      res.writeHead(200); res.end('accepted cached event without HMAC'); return;
+    }
     const retiredCachedDuplicate = typeof id === 'string' &&
       id.startsWith('wfl_revokeddup_') && seen.has(id) &&
       retiredSecret !== undefined &&
@@ -168,7 +174,13 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       try { authenticatedId = JSON.parse(body)?.data?.id; }
       catch { authenticatedId = undefined; }
     }
-    const metadata = { id: authenticatedId, timestamp: normalizeTestTimestamp ? ts : timestampHeader, body, signature,
+    let authenticatedBody = body;
+    if (unsafeCanonicalizeRawJsonBeforeVerify && rawJsonProbe) {
+      try { authenticatedBody = JSON.stringify(JSON.parse(body)); }
+      catch { /* Malformed JSON remains invalid under the ordinary verifier. */ }
+    }
+    const metadata = { id: authenticatedId, timestamp: normalizeTestTimestamp ? ts : timestampHeader,
+      body: authenticatedBody, signature,
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
       ts > receiverNow + 300;
@@ -194,6 +206,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (unsafeCommitRawJsonBeforeReject && rawJsonProbe && seen.has(id)) {
+        processedCount += 1;
+      }
       if (typeof id === 'string' && id.startsWith('wfl_authretry_')) {
         if (unsafeCacheRejectedSignature) seen.add(id);
         if (unsafeCommitRejectedSignature) {
