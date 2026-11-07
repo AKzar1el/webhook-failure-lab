@@ -15,6 +15,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
   unsafeAcknowledgeStaleDuplicate = false, unsafeCommitStaleDuplicateBeforeReject = false,
+  unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -74,6 +75,13 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       seen.delete(id);
     }
     const expiredReplay = seenAt.has(id) && !seen.has(id);
+    const unauthenticatedCollision = typeof id === 'string' &&
+      id.startsWith('wfl_conflict_unauth_') && seenConflictBodies.has(id) &&
+      seenConflictBodies.get(id) !== body;
+    if (unsafeInspectCollisionBeforeAuth && unauthenticatedCollision) {
+      // Broken receiver reveals the stored-ID conflict without authenticating the new bytes.
+      res.writeHead(409); res.end('conflicting event ID payload'); return;
+    }
     if (unsafeAcknowledgeTamperedDuplicate && typeof id === 'string' &&
         id.startsWith('wfl_dupauth_') && seen.has(id)) {
       // Broken receiver acknowledges known IDs before verifying the incoming HMAC.
@@ -101,6 +109,9 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
     const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired);
     if (verifySignatures && !accepted) {
+      if (unsafeCommitUnauthenticatedCollision && unauthenticatedCollision) {
+        processedCount += 1;
+      }
       if (unsafeCommitTamperedDuplicateBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_dupauth_') && seen.has(id)) {
         // Broken receiver rejects the invalid HMAC only after another effect.

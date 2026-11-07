@@ -1320,3 +1320,92 @@ test('CLI exposes concurrent collision without exposing signing material', async
     await rm(directory, { recursive: true });
   }
 });
+
+test('unauthenticated changed-body replay is rejected before signed ID collision handling', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, rejectUnauthenticatedCollision: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const replay = result.scenarios.at(-1);
+    assert.equal(replay.scenario, 'unauthenticated_event_id_collision');
+    assert.deepEqual(replay.httpStatuses, [200, 401]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.expectedProcessedCount, 2);
+  });
+});
+
+test('unauthenticated collision catches receivers inspecting stored payloads before HMAC', async () => {
+  await withServer({ unsafeInspectCollisionBeforeAuth: true }, async (config) => {
+    const result = await runLab({ ...config, rejectUnauthenticatedCollision: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 409]);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 2]);
+    assert.equal(result.scenarios.at(-1).passed, false);
+  });
+});
+
+test('unauthenticated collision detects rejection after committing an untrusted effect', async () => {
+  await withServer({ unsafeCommitUnauthenticatedCollision: true }, async (config) => {
+    const result = await runLab({ ...config, rejectUnauthenticatedCollision: true }, { secret });
+    assert.equal(result.success, false);
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 401]);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 3]);
+    assert.equal(result.scenarios.at(-1).passed, false);
+  });
+});
+
+test('unauthenticated collision rejects 409 even when custom rejection statuses include it', async () => {
+  await withServer({ unsafeInspectCollisionBeforeAuth: true }, async (config) => {
+    const result = await runLab({ ...config, rejectUnauthenticatedCollision: true,
+      rejectionStatuses: [400, 401, 403, 409] }, { secret });
+    assert.equal(result.success, false);
+    assert.equal(result.scenarios.at(-1).httpStatuses[1], 409);
+    assert.equal(result.scenarios.at(-1).passed, false);
+  });
+});
+
+test('unauthenticated collision opt-in rejects malformed values before any traffic', async () => {
+  await withServer({}, async (config) => {
+    for (const rejectUnauthenticatedCollision of [0, 1, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, rejectUnauthenticatedCollision },
+        { secret }), /rejectUnauthenticatedCollision/);
+    }
+    const state = await fetch(config.observer);
+    assert.equal((await state.json()).processedCount, 0);
+  });
+});
+
+test('unauthenticated collision composes with signed collision and duplicate authentication', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, conflictingEventIdPayload: true,
+      rejectTamperedDuplicateSignature: true, rejectUnauthenticatedCollision: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'unauthenticated_event_id_collision');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [4, 4]);
+  });
+});
+
+test('CLI surfaces unauthenticated collision check without exposing HMAC or synthetic secret', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-unauth-collision-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({
+      ...server.config, rejectUnauthenticatedCollision: true,
+    }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'unauthenticated_event_id_collision');
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 401]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

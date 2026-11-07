@@ -77,6 +77,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
       typeof rejectStaleDuplicateSignature !== 'boolean') {
     throw new TypeError('rejectStaleDuplicateSignature must be a boolean');
   }
+  const rejectUnauthenticatedCollision = config.rejectUnauthenticatedCollision;
+  if (rejectUnauthenticatedCollision !== undefined &&
+      typeof rejectUnauthenticatedCollision !== 'boolean') {
+    throw new TypeError('rejectUnauthenticatedCollision must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -110,6 +115,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
+    rejectUnauthenticatedCollision,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
@@ -623,6 +629,36 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
     reports.push({ scenario: 'stale_cached_duplicate_signature',
       passed: httpStatuses[0] === options.successStatus &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectUnauthenticatedCollision) {
+    const collisionId = `wfl_conflict_unauth_${randomUUID().replaceAll('-', '')}`;
+    const originalBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: collisionId } });
+    const tamperedBody = JSON.stringify({ type: 'test.updated',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: collisionId } });
+    // Reuse a valid signature from the initial body against changed bytes: no longer authentic.
+    const originalSignature = sign({ secret, id: collisionId, timestamp: now, body: originalBody });
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': collisionId,
+        'webhook-timestamp': String(now), 'webhook-signature': originalSignature },
+      body: rawBody,
+    });
+    const original = await send(originalBody);
+    const afterOriginal = await observe();
+    const unauthenticated = await send(tamperedBody);
+    const afterUnauthenticated = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [original.status, unauthenticated.status];
+    const observedCounts = [afterOriginal, afterUnauthenticated];
+    reports.push({ scenario: 'unauthenticated_event_id_collision',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        httpStatuses[1] !== 409 &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
