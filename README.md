@@ -411,6 +411,20 @@ provider-specific signature schemes. The baseline four checks remain unchanged
 when omitted. Only local synthetic secrets and loopback HTTP are used; the
 observer cannot prove the absence of unobserved external effects.
 
+### Opt-in signed webhook ID integrity test
+
+Set `"rejectTamperedEventId": true` in a local `lab.json` to confirm that
+a Standard Webhooks receiver authenticates the actual `webhook-id` header.
+The test sends a valid signed event and then resends its unchanged body,
+timestamp and signature with **only the header ID modified**. The forged
+request must be rejected with a configured 4xx status without any additional
+receiver-reported processing effect.
+
+Negative localhost fixtures detect receivers that substitute the JSON body's
+ID during HMAC verification or commit an effect before rejecting the forged
+header. This is opt-in and uses synthetic secrets and loopback requests only;
+it cannot establish the absence of unobserved external side effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
