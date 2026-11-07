@@ -13,6 +13,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
+  unsafeAcknowledgeStaleDuplicate = false, unsafeCommitStaleDuplicateBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -77,6 +78,13 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       // Broken receiver acknowledges known IDs before verifying the incoming HMAC.
       res.writeHead(200); res.end('accepted duplicate'); return;
     }
+    const staleCachedDuplicate = typeof id === 'string' &&
+      id.startsWith('wfl_staledup_') && seen.has(id) && ts < receiverNow - 300 &&
+      verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'], now: ts });
+    if (unsafeAcknowledgeStaleDuplicate && staleCachedDuplicate) {
+      // Broken receiver checks its idempotency cache before enforcing freshness.
+      res.writeHead(200); res.end('accepted duplicate'); return;
+    }
     const metadata = { id, timestamp: ts, body, signature: req.headers['webhook-signature'],
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
@@ -95,6 +103,9 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       if (unsafeCommitTamperedDuplicateBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_dupauth_') && seen.has(id)) {
         // Broken receiver rejects the invalid HMAC only after another effect.
+        processedCount += 1;
+      }
+      if (unsafeCommitStaleDuplicateBeforeReject && staleCachedDuplicate) {
         processedCount += 1;
       }
       if (unsafeCommitFutureBeforeReject && hasValidFutureSignature && !seen.has(id)) {

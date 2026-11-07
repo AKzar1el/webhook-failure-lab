@@ -1147,3 +1147,84 @@ test('CLI exposes concurrent distinct delivery coverage without emitting synthet
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in stale signed duplicate is rejected even while its event ID remains cached', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, rejectStaleDuplicateSignature: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const replay = result.scenarios.at(-1);
+    assert.equal(replay.scenario, 'stale_cached_duplicate_signature');
+    assert.deepEqual(replay.httpStatuses, [200, 401]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.expectedProcessedCount, 2);
+    assert.equal(replay.passed, true);
+  });
+});
+
+test('stale cached duplicate check detects idempotency cache bypassing timestamp freshness', async () => {
+  await withServer({ unsafeAcknowledgeStaleDuplicate: true }, async (config) => {
+    const result = await runLab({ ...config, rejectStaleDuplicateSignature: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const replay = result.scenarios.at(-1);
+    assert.deepEqual(replay.httpStatuses, [200, 200]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.passed, false);
+  });
+});
+
+test('stale cached duplicate check detects rejection that still records another effect', async () => {
+  await withServer({ unsafeCommitStaleDuplicateBeforeReject: true }, async (config) => {
+    const result = await runLab({ ...config, rejectStaleDuplicateSignature: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const replay = result.scenarios.at(-1);
+    assert.deepEqual(replay.httpStatuses, [200, 401]);
+    assert.deepEqual(replay.observedCounts, [2, 3]);
+    assert.equal(replay.passed, false);
+  });
+});
+
+test('stale cached duplicate opt-in rejects nonboolean values before any requests', async () => {
+  await withServer({}, async (config) => {
+    for (const rejectStaleDuplicateSignature of [1, 0, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, rejectStaleDuplicateSignature }, { secret }),
+        /rejectStaleDuplicateSignature/);
+    }
+    const state = await fetch(config.observer);
+    assert.equal((await state.json()).processedCount, 0);
+  });
+});
+
+test('stale cached duplicate freshness composes with tampered and re-signed duplicates', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, rejectStaleDuplicateSignature: true,
+      rejectTamperedDuplicateSignature: true, resignedDuplicateDelivery: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'stale_cached_duplicate_signature');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [4, 4]);
+  });
+});
+
+test('CLI exposes stale cached duplicate rejection without leaking signing material', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-stale-duplicate-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, rejectStaleDuplicateSignature: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'stale_cached_duplicate_signature');
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 401]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});
