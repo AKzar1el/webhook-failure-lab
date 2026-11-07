@@ -327,6 +327,16 @@ This opt-in rule assumes a Standard Webhooks receiver enforcing a 300-second
 timestamp tolerance; passing establishes only the caller-reported count, not
 the absence of external effects.
 
+### Signed webhook ID header integrity (opt-in)
+
+Enable `"rejectTamperedEventId": true`. The harness authenticates a new
+event under its original ID, then changes only the transmitted ID header
+while preserving the HMAC, timestamp and JSON payload. The second delivery
+must be rejected and must not increase the observer's `processedCount`.
+Synthetic broken receivers detect body-ID substitution during signature
+verification and reject-after-commit behavior. The observer cannot prove
+unobserved external effects.
+
 ## Bounded next scenarios (not implemented yet)
 
 - Torn multi-write database transaction and power-loss/fsync durability

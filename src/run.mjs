@@ -102,6 +102,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
       typeof rejectTamperedDuplicateSignature !== 'boolean') {
     throw new TypeError('rejectTamperedDuplicateSignature must be a boolean');
   }
+  const rejectTamperedEventId = config.rejectTamperedEventId;
+  if (rejectTamperedEventId !== undefined && typeof rejectTamperedEventId !== 'boolean') {
+    throw new TypeError('rejectTamperedEventId must be a boolean');
+  }
   const rejectStaleDuplicateSignature = config.rejectStaleDuplicateSignature;
   if (rejectStaleDuplicateSignature !== undefined &&
       typeof rejectStaleDuplicateSignature !== 'boolean') {
@@ -151,7 +155,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
     rejectFutureSignedTimestamp, rejectNoncanonicalTimestamp,
-    rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
+    rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
@@ -959,6 +963,33 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
       passed: httpStatuses.every((status) => options.rejectionStatuses.includes(status)) &&
         observedCounts.every((count) => count === expectedCount),
       httpStatuses, observedCounts, expectedProcessedCount: expectedCount });
+  }
+
+  if (options.rejectTamperedEventId) {
+    const originalId = `wfl_idtamper_${randomUUID().replaceAll('-', '')}`;
+    const body = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: originalId } });
+    const signature = sign({ secret, id: originalId, timestamp: now, body });
+    const send = (headerId) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': headerId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body,
+    });
+    // Only the event ID header changes; its old HMAC cannot authenticate it.
+    const accepted = await send(originalId);
+    const afterAccepted = await observe();
+    const tampered = await send(`${originalId}_altered`);
+    const afterTampered = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [accepted.status, tampered.status];
+    const observedCounts = [afterAccepted, afterTampered];
+    reports.push({ scenario: 'tampered_webhook_id_header',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,
