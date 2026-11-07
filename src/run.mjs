@@ -4,7 +4,7 @@ import { keyFromSecret, sign } from './standard.mjs';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
-function checkOptions(config, secret, previousSecret, retiredSecret) {
+function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecret) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('Config must be an object');
   }
@@ -30,6 +30,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   const caseSensitiveEventIds = config.caseSensitiveEventIds;
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
+  }
+  const tenantScopedEventIds = config.tenantScopedEventIds;
+  if (tenantScopedEventIds !== undefined && typeof tenantScopedEventIds !== 'boolean') {
+    throw new TypeError('tenantScopedEventIds must be a boolean');
   }
   const concurrentDuplicateDeliveries = config.concurrentDuplicateDeliveries;
   if (concurrentDuplicateDeliveries !== undefined &&
@@ -147,6 +151,12 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
       throw new TypeError('Rotation requires three distinct signing keys');
     }
   }
+  if (tenantScopedEventIds) {
+    keyFromSecret(tenantBSecret);
+    if ([secret, previousSecret, retiredSecret].includes(tenantBSecret)) {
+      throw new TypeError('tenantBSecret must be distinct from the other signing keys');
+    }
+  }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
@@ -154,6 +164,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
+    tenantScopedEventIds,
     rejectFutureSignedTimestamp, rejectNoncanonicalTimestamp,
     rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
@@ -161,10 +172,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     retentionWindowSeconds };
 }
 
-export async function runLab(config, { secret, previousSecret, retiredSecret,
+export async function runLab(config, { secret, previousSecret, retiredSecret, tenantBSecret,
   restartReceiver, recoverReceiver, advanceReceiverTime, request = fetch,
   clock = () => Math.floor(Date.now() / 1000) } = {}) {
-  const options = checkOptions(config, secret, previousSecret, retiredSecret);
+  const options = checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecret);
   if (options.restartAfterCommit && typeof restartReceiver !== 'function') {
     throw new TypeError('restartReceiver must be a local process-controller function');
   }
@@ -747,6 +758,43 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
+  }
+
+  if (options.tenantScopedEventIds) {
+    const tenantId = `wfl_tenant_${randomUUID().replaceAll('-', '')}`;
+    const bodyA = JSON.stringify({ type: 'test.created', data: { id: tenantId, tenant: 'a' } });
+    const bodyB = JSON.stringify({ type: 'test.created', data: { id: tenantId, tenant: 'b' } });
+    const send = (tenant, signingKey, rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': tenantId,
+        'webhook-timestamp': String(now), 'x-wfl-test-tenant': tenant,
+        'webhook-signature': sign({ secret: signingKey, id: tenantId,
+          timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    const deliveries = [
+      ['a', secret, bodyA],
+      ['b', tenantBSecret, bodyB],
+      ['a', tenantBSecret, bodyA],
+      ['a', secret, bodyA],
+      ['b', tenantBSecret, bodyB],
+    ];
+    const httpStatuses = [];
+    const observedCounts = [];
+    for (const [tenant, signingKey, rawBody] of deliveries) {
+      const response = await send(tenant, signingKey, rawBody);
+      httpStatuses.push(response.status);
+      observedCounts.push(await observe());
+    }
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'tenant_scoped_signed_event_ids',
+      passed: httpStatuses.every((status, index) => index === 2
+        ? options.rejectionStatuses.includes(status) && status !== 409
+        : status === options.successStatus) &&
+        observedCounts.every((count, index) => count === expectedCounts[index]),
+      httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
   }
 
   if (options.caseSensitiveEventIds) {
