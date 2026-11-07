@@ -13,6 +13,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   supportCommitted503Fault = true, unsafeForgetCommitted503Dedupe = false,
   unsafeRejectCommitted503BeforeProcess = false,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
+  unsafeReapplyDelayedCreation = false, unsafeRejectDelayedCreation = false,
+  unsafeCountDelayedCreationReplay = false,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
@@ -228,7 +230,20 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         res.writeHead(400); res.end(); return;
       }
       const state = resourceStates.get(resourceId) ?? 'missing';
-      if (seen.has(id)) { res.writeHead(200); res.end('accepted duplicate'); return; }
+      if (seen.has(id)) {
+        if (id.startsWith('wfl_order_latecreate_create_') &&
+            event.type === 'test.resource.created' && state === 'activated') {
+          if (unsafeRejectDelayedCreation) {
+            res.writeHead(409); res.end('already activated'); return;
+          }
+          if (unsafeReapplyDelayedCreation) {
+            resourceStates.set(resourceId, 'created');
+            processedCount += 1;
+          }
+          if (unsafeCountDelayedCreationReplay) processedCount += 1;
+        }
+        res.writeHead(200); res.end('accepted duplicate'); return;
+      }
       if (event.type === 'test.resource.activated' && state === 'missing') {
         // Negative fixtures model two distinct precondition-handling bugs.
         if (unsafeApplyOutOfOrder) {
