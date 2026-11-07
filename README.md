@@ -99,6 +99,23 @@ changed bytes, and committing an effect before rejecting a tampered delivery.
 This is opt-in and composes with JSON charset media-type checks. It does not
 promise a provider sends pretty JSON or establish unseen external effects.
 
+### Optional signed oversized-body rejection and retry
+
+Add `"rejectOversizedSignedPayload": true` to test a **local development-only**
+body-size policy of **1,024 UTF-8 bytes**. The lab signs a valid synthetic
+JSON event containing more than 2 KiB of text; the receiver must return
+**HTTP 413** without an effect or deduplication record. It then sends a
+smaller JSON event with the **same ID** and a fresh valid HMAC over the
+corrected bytes, followed by an identical signed replay. Both must be
+acknowledged, with only one observed effect.
+
+Broken local receivers demonstrate accepting oversized signed input, caching
+the rejected ID, or returning 413 after committing an effect. An absent
+size-check adapter fails the scenario. This is an explicit synthetic contract,
+not a universal Standard Webhooks or provider payload limit. Enable it only
+when a local receiver intentionally enforces that limit; it does not prove
+provider retry behavior or unobserved business effects.
+
 ### Optional tenant-scoped signed event ID isolation
 
 Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,
