@@ -54,6 +54,21 @@ local receiver contract and does not prove anything about real provider
 retry policies or unobserved external side effects. The existing four default
 checks and loopback-only restrictions are unchanged.
 
+### Optional case-sensitive signed event ID check
+
+Add `"caseSensitiveEventIds": true` to `lab.json` to verify that a receiver
+does not collapse two **independent authenticated webhook IDs** merely because
+they differ in ASCII letter case. The lab sends two freshly signed events whose
+IDs are identical except for a final `a` versus `A`, then retries both
+events with their original signatures. All four responses must be accepted;
+the observer must increment for each new ID and not for either retry.
+
+Deliberately broken loopback receivers either silently deduplicate the second
+ID by a lowercased key or reject it as an alleged collision. This opt-in
+contract assumes the provider treats webhook IDs as case-sensitive opaque
+strings; do not enable it for an integration that explicitly normalizes IDs.
+Passing proves only receiver-reported counts, not external exactly-once effects.
+
 ### Optional concurrent duplicate race check
 
 Add `"concurrentDuplicateDeliveries": 4` to the local `lab.json` config to also send four **simultaneous, identically signed** requests using a fresh event ID. The check requires every request to return `successStatus` and the observer count to increase by **exactly one** after all requests finish. The count can be set to an integer from 2 through 8; values outside that range are rejected before any requests are sent. Omitting it retains the original four-scenario behavior.
