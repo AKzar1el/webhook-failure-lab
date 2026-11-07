@@ -25,6 +25,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   unsafeFirstSignatureOnly = false, unsafeAcceptInvalidMultiSignature = false,
   unsafeCommitInvalidMultiSignatureBeforeReject = false,
+  unsafeVerifyBodyIdInsteadOfHeader = false, unsafeCommitTamperedIdBeforeReject = false,
   unsafeNormalizeTimestamp = false, unsafeCommitNoncanonicalBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false,
@@ -129,7 +130,13 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       timestampHeader !== String(ts);
     const normalizeTestTimestamp = unsafeNormalizeTimestamp && typeof id === 'string' &&
       id.startsWith('wfl_noncanonical_');
-    const metadata = { id, timestamp: normalizeTestTimestamp ? ts : timestampHeader, body, signature,
+    let authenticatedId = id;
+    if (unsafeVerifyBodyIdInsteadOfHeader && typeof id === 'string' &&
+        id.startsWith('wfl_idtamper_') && id.endsWith('_altered')) {
+      try { authenticatedId = JSON.parse(body)?.data?.id; }
+      catch { authenticatedId = undefined; }
+    }
+    const metadata = { id: authenticatedId, timestamp: normalizeTestTimestamp ? ts : timestampHeader, body, signature,
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
       ts > receiverNow + 300;
@@ -146,6 +153,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
         id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (unsafeCommitTamperedIdBeforeReject && typeof id === 'string' &&
+          id.startsWith('wfl_idtamper_') && id.endsWith('_altered')) {
+        processedCount += 1;
+      }
       if (unsafeCommitNoncanonicalBeforeReject && noncanonicalTimestamp &&
           typeof id === 'string' && id.startsWith('wfl_noncanonical_')) {
         processedCount += 1;
