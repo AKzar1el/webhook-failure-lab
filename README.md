@@ -34,6 +34,26 @@ npm run verify
 
 The four initial scenarios are: valid event (count +1), **duplicate same event ID** (no extra effect), **body tampering after signing** (reject + no effect), and **signed but expired timestamp** (reject + no effect). The CLI exits 0 only if all checks pass, 1 for assertion failures, 2 for bad input/transport errors. Output is machine-readable JSON.
 
+### Optional signed malformed-body retry check
+
+Add `"rejectMalformedSignedPayload": true` to `lab.json` to detect a
+**validly signed but syntactically invalid JSON** event that poisons a receiver's
+idempotency cache. The lab sends malformed JSON with a fresh event ID and a
+correct HMAC; the receiver must return a configured 4xx rejection **without
+committing an effect or recording the ID as processed**. It then sends a
+corrected valid JSON body using the **same ID**, newly signed over its actual
+bytes and the same fresh timestamp. The retry must return `successStatus`
+and commit exactly one observed effect.
+
+Three deliberately broken local receivers demonstrate accepting malformed
+JSON, rejecting it after committing, and returning 400 while incorrectly
+reserving its ID (thereby silently dropping the corrected retry). A missing
+JSON-validation adapter also fails the test. The check is opt-in because not
+every provider supports same-ID corrected retries; it exercises a declared
+local receiver contract and does not prove anything about real provider
+retry policies or unobserved external side effects. The existing four default
+checks and loopback-only restrictions are unchanged.
+
 ### Optional concurrent duplicate race check
 
 Add `"concurrentDuplicateDeliveries": 4` to the local `lab.json` config to also send four **simultaneous, identically signed** requests using a fresh event ID. The check requires every request to return `successStatus` and the observer count to increase by **exactly one** after all requests finish. The count can be set to an integer from 2 through 8; values outside that range are rejected before any requests are sent. Omitting it retains the original four-scenario behavior.
