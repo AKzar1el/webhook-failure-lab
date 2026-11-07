@@ -341,11 +341,21 @@ localhost child-process fixture exits with code 48; broken variants persist
 only the deduplication ID or an effect counter before crashing, and both fail.
 Ignoring the fault or returning a non-loopback recovery URL also fails.
 
+Set `parallelCrashRecoveryRetries: 4` (integer 2-8) **together with**
+`crashBeforeCommit: true` to simulate concurrent redelivery by several workers
+immediately after recovery, rather than one sequential retry. Every identical
+signed retry must be acknowledged, while the observer rises by exactly one
+effect in total; an additional sequential replay must remain idempotent. The
+fixture includes a deliberately broken recovered process that lets two requests
+both pass a stale check-before-write deduplication read, proving the probe
+detects the race. The count and prerequisites are validated before HTTP traffic.
+
 The JSON CLI cannot control local processes. Run this scenario separately
 from the other restart/crash probes and retention-clock tests. Never expose
 the fault adapter on a public receiver. This is a controlled pre-write
 process exit, not a proof of transaction atomicity under power loss, fsync
-durability, or any unobserved business side effect.
+durability, exhaustive concurrency interleavings, or any unobserved business
+side effect.
 
 ### Opt-in deduplication retention and stale replay boundary
 

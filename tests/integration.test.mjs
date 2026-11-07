@@ -25,6 +25,7 @@ function launchRestartReceiver(statePath, {
   forgetDedupe = false, crashLoseDedupe = false, crashLoseCount = false,
   ignoreCrashFault = false, preCrashPoisonDedupe = false, preCrashExtraEffect = false,
   ignorePreCrashFault = false, startupDelayMs = 0, suppressReady = false,
+  raceOnRecovery = false,
   startupTimeoutMs = 10000,
 } = {}) {
   return new Promise((resolve, reject) => {
@@ -38,6 +39,7 @@ function launchRestartReceiver(statePath, {
           WFL_TEST_PRECRASH_POISON_DEDUPE: preCrashPoisonDedupe ? '1' : '0',
           WFL_TEST_PRECRASH_EXTRA_EFFECT: preCrashExtraEffect ? '1' : '0',
           WFL_TEST_IGNORE_PRECRASH: ignorePreCrashFault ? '1' : '0',
+          WFL_TEST_RACY_RECOVERY: raceOnRecovery ? '1' : '0',
           WFL_TEST_STARTUP_DELAY_MS: String(startupDelayMs),
           WFL_TEST_SUPPRESS_READY: suppressReady ? '1' : '0' } });
     let stderr = '';
@@ -102,7 +104,7 @@ async function withRestartReceiver({ forgetDedupeOnRestart = false } = {}, fn) {
 async function withCrashReceiver({
   loseDedupeOnCrash = false, loseCountOnCrash = false, ignoreCrashFault = false,
   beforeCommit = false, preCrashPoisonDedupe = false, preCrashExtraEffect = false,
-  ignorePreCrashFault = false,
+  ignorePreCrashFault = false, raceOnRecovery = false,
 } = {}, fn) {
   const directory = await mkdtemp(join(tmpdir(), 'wfl-crash-'));
   const statePath = join(directory, 'durable.json');
@@ -132,7 +134,7 @@ async function withCrashReceiver({
       }
       assert.equal(oldChild.exitCode, beforeCommit ? 48 : 47,
         'Fixture must terminate abruptly with the expected crash exit code');
-      live = await launchRestartReceiver(statePath);
+      live = await launchRestartReceiver(statePath, { raceOnRecovery });
       assert.notEqual(live.child.pid, oldPid, 'Recovery must launch a new OS process');
       return live.config;
     };
@@ -709,6 +711,59 @@ test('precommit crash leaves no reserved ID and corrected retry commits exactly 
     assert.deepEqual(crash.observedCounts, [1, 1, 2, 2]);
     assert.notEqual(crash.receiverInstanceIds[0], crash.receiverInstanceIds[1]);
     assert.equal(crash.expectedProcessedCount, 2);
+  });
+});
+
+test('parallel recovered retries after a real precommit crash commit exactly once', async () => {
+  await withCrashReceiver({ beforeCommit: true }, async (config, recoverReceiver) => {
+    const result = await runLab({ ...config, crashBeforeCommit: true,
+      parallelCrashRecoveryRetries: 4 }, { secret, recoverReceiver });
+    assert.equal(result.success, true);
+    const crash = result.scenarios.at(-1);
+    assert.equal(crash.scenario, 'crash_before_commit_parallel_retries');
+    assert.equal(crash.firstAttemptOutcome, 'transport_error');
+    assert.deepEqual(crash.retryHttpStatuses, [200, 200, 200, 200]);
+    assert.deepEqual(crash.observedCounts, [1, 1, 2, 2]);
+    assert.equal(crash.replayHttpStatus, 200);
+    assert.notEqual(crash.receiverInstanceIds[0], crash.receiverInstanceIds[1]);
+  });
+});
+
+test('parallel recovery catches a check-before-write deduplication race in a restarted receiver', async () => {
+  await withCrashReceiver({ beforeCommit: true, raceOnRecovery: true },
+    async (config, recoverReceiver) => {
+      const result = await runLab({ ...config, crashBeforeCommit: true,
+        parallelCrashRecoveryRetries: 4 }, { secret, recoverReceiver });
+      assert.equal(result.success, false);
+      const crash = result.scenarios.at(-1);
+      assert.equal(crash.scenario, 'crash_before_commit_parallel_retries');
+      assert.ok(crash.observedCounts[2] > crash.expectedProcessedCount);
+      assert.equal(crash.passed, false);
+    });
+});
+
+test('parallel recovery still detects precrash ID poisoning', async () => {
+  await withCrashReceiver({ beforeCommit: true, preCrashPoisonDedupe: true },
+    async (config, recoverReceiver) => {
+      const result = await runLab({ ...config, crashBeforeCommit: true,
+        parallelCrashRecoveryRetries: 2 }, { secret, recoverReceiver });
+      assert.equal(result.success, false);
+      assert.equal(result.scenarios.at(-1).scenario, 'crash_before_commit_parallel_retries');
+      assert.deepEqual(result.scenarios.at(-1).observedCounts, [1, 1, 1, 1]);
+    });
+});
+
+test('parallel postcrash retry count validates range and requires precommit crash opt-in', async () => {
+  await withServer({}, async (config) => {
+    for (const parallelCrashRecoveryRetries of [0, 1, 9, 2.5, '4', true, null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, crashBeforeCommit: true,
+        parallelCrashRecoveryRetries }, { secret, recoverReceiver: async () => config }),
+      /parallelCrashRecoveryRetries/);
+    }
+    await assert.rejects(() => runLab({ ...config, parallelCrashRecoveryRetries: 4 },
+      { secret }), /crashBeforeCommit/);
+    await assert.rejects(() => runLab({ ...config, crashBeforeCommit: true,
+      parallelCrashRecoveryRetries: 4 }, { secret }), /recoverReceiver/);
   });
 });
 

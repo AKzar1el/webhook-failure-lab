@@ -170,6 +170,15 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (crashBeforeCommit !== undefined && typeof crashBeforeCommit !== 'boolean') {
     throw new TypeError('crashBeforeCommit must be a boolean');
   }
+  const parallelCrashRecoveryRetries = config.parallelCrashRecoveryRetries;
+  if (parallelCrashRecoveryRetries !== undefined &&
+      (!Number.isInteger(parallelCrashRecoveryRetries) ||
+       parallelCrashRecoveryRetries < 2 || parallelCrashRecoveryRetries > 8)) {
+    throw new TypeError('parallelCrashRecoveryRetries must be an integer between 2 and 8');
+  }
+  if (parallelCrashRecoveryRetries !== undefined && crashBeforeCommit !== true) {
+    throw new TypeError('parallelCrashRecoveryRetries requires crashBeforeCommit: true');
+  }
   const retentionWindowSeconds = config.retentionWindowSeconds;
   if (retentionWindowSeconds !== undefined &&
       (!Number.isInteger(retentionWindowSeconds) || retentionWindowSeconds < 2 ||
@@ -210,7 +219,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectFutureSignedTimestamp, rejectFutureDuplicateSignature, rejectNoncanonicalTimestamp,
     rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
-    restartAfterCommit, crashAfterPersist, crashBeforeCommit,
+    restartAfterCommit, crashAfterPersist, crashBeforeCommit, parallelCrashRecoveryRetries,
     retentionWindowSeconds };
 }
 
@@ -954,9 +963,11 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const recoveredEndpoint = requireLoopbackUrl(recovered?.endpoint, 'recoverReceiver endpoint');
     const recoveredObserver = requireLoopbackUrl(recovered?.observer, 'recoverReceiver observer');
     const afterRecovery = await observeState(undefined, recoveredObserver);
-    const retry = await request(recoveredEndpoint, {
+    const retries = await Promise.all(Array.from({
+      length: options.parallelCrashRecoveryRetries ?? 1,
+    }, () => request(recoveredEndpoint, {
       method: 'POST', redirect: 'manual', signal: timeout(), headers, body: crashBody,
-    });
+    })));
     const afterRetry = await observeState(undefined, recoveredObserver);
     const replay = await request(recoveredEndpoint, {
       method: 'POST', redirect: 'manual', signal: timeout(), headers, body: crashBody,
@@ -967,15 +978,19 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       afterRetry.processedCount, afterReplay.processedCount];
     const receiverInstanceIds = [beforeCrash.receiverInstanceId ?? null,
       afterRecovery.receiverInstanceId ?? null];
-    reports.push({ scenario: 'crash_before_commit_retry',
+    const retryHttpStatuses = retries.map((response) => response.status);
+    reports.push({ scenario: options.parallelCrashRecoveryRetries === undefined ?
+      'crash_before_commit_retry' : 'crash_before_commit_parallel_retries',
       passed: firstAttemptOutcome === 'transport_error' &&
-        retry.status === options.successStatus && replay.status === options.successStatus &&
+        retryHttpStatuses.every((status) => status === options.successStatus) &&
+        replay.status === options.successStatus &&
         observedCounts[0] === expectedCount && observedCounts[1] === expectedCount &&
         observedCounts[2] === expectedProcessedCount &&
         observedCounts[3] === expectedProcessedCount &&
         receiverInstanceIds.every((value) => typeof value === 'string' && value.length > 0) &&
         receiverInstanceIds[0] !== receiverInstanceIds[1],
-      firstAttemptOutcome, retryHttpStatus: retry.status, replayHttpStatus: replay.status,
+      firstAttemptOutcome, retryHttpStatus: retryHttpStatuses[0], retryHttpStatuses,
+      replayHttpStatus: replay.status,
       observedCounts, receiverInstanceIds, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

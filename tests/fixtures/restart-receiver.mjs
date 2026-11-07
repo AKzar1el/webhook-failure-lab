@@ -27,9 +27,10 @@ let processedCount = persisted.processedCount;
 // This intentionally broken mode models losing dedupe keys while keeping the count.
 const seen = new Set(process.env.WFL_TEST_FORGET_DEDUPE === '1' ? [] : persisted.seenIds);
 const receiverInstanceId = `${process.pid}:${randomUUID()}`;
+const waitingRacyRetries = [];
 
 async function persist({ omitSeenId, omitCount = false } = {}) {
-  const staged = `${statePath}.${process.pid}.tmp`;
+  const staged = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(staged, JSON.stringify({
     processedCount: processedCount - (omitCount ? 1 : 0),
     seenIds: [...seen].filter((id) => id !== omitSeenId),
@@ -90,6 +91,23 @@ const server = createServer(async (req, res) => {
       process.exit(47);
     }
     if (!seen.has(id)) {
+      if (process.env.WFL_TEST_RACY_RECOVERY === '1' &&
+          typeof id === 'string' && id.startsWith('wfl_precrash_')) {
+        // Both requests read an absent ID before either writes: a deliberate race fixture.
+        await new Promise((resolve) => {
+          const release = () => {
+            clearTimeout(timer);
+            const index = waitingRacyRetries.indexOf(release);
+            if (index !== -1) waitingRacyRetries.splice(index, 1);
+            resolve();
+          };
+          const timer = setTimeout(release, 1000);
+          waitingRacyRetries.push(release);
+          if (waitingRacyRetries.length >= 2) {
+            for (const unblock of waitingRacyRetries.splice(0)) unblock();
+          }
+        });
+      }
       seen.add(id);
       processedCount++;
       // Both the effect counter and dedupe key are durable before acknowledging.
