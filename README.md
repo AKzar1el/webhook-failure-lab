@@ -82,6 +82,26 @@ Add `"outOfOrderStateTransitions": true` to local `lab.json` to test an explicit
 
 The local observer must support `GET /state?resourceId=<id>` and respond with `{ "processedCount": 3, "resourceState": "activated" }` (example values); valid resource states are `missing`, `created` and `activated`. If the observer does not report a state or the receiver lacks this contract adapter, the scenario fails rather than silently passing. A broken receiver that applies activation before creation, or incorrectly marks a rejected activation as already seen, is detected by the negative fixtures in `tests/integration.test.mjs`. This opt-in scenario composes with the other checks, remains loopback-only, and is **not** proof of ordered delivery from any provider, process-restart durability, or external exactly-once effects. Do not expose the synthetic event adapter or observer publicly.
 
+### Optional late creation replay after resource activation
+
+Add `"delayedCreationReplayAfterActivation": true` to local `lab.json` to
+catch receivers that lose ordering when an **older, already-accepted creation
+event arrives again after activation**. The same development-only resource
+adapter and observer described above are required. The harness sends a valid
+signed `test.resource.created` event, a distinct valid signed
+`test.resource.activated` event for the same resource, then a **byte-identical
+signed retry of creation** (same ID, timestamp, signature and body). All three
+responses must equal `successStatus`. The observer must report `created`,
+`activated`, `activated` with only two additional processed effects.
+
+Negative loopback receivers expose a replay that rewinds state, rejects a
+previously accepted event with 409, or acknowledges the replay while recording
+an extra effect without changing the final state. The check uses a separate
+synthetic resource and composes with `outOfOrderStateTransitions`. It does not
+prove long-term deduplication retention, persistence across restarts, upstream
+delivery ordering or effects missing from the receiver-supplied observer.
+Keep both the resource-state adapter and observer local-only.
+
 ### Optional signing-key rotation grace and retirement check
 
 Add `"secretRotation": true` to the local configuration and supply **three distinct, synthetic Standard Webhooks keys** as environment variables: `WFL_SECRET` (current), `WFL_PREVIOUS_SECRET` (previous key still accepted during the configured grace period), and `WFL_RETIRED_SECRET` (revoked key that must no longer be accepted). Never put these secrets in `lab.json` or Git. This check requires a local receiver configured to accept the current and previous keys but reject the retired key. All three secrets are validated before sending any HTTP requests.

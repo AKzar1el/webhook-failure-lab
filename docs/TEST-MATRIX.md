@@ -18,6 +18,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Committed event returns HTTP 503, then identical signed delivery retried (opt-in) | First attempt returns 503 *after* one observed effect; retry succeeds with no additional effect | Local integration tests with missing dedupe key, precommit failure, and ignored fault negative fixtures |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
+| Delayed replay of resource creation after activation (opt-in) | Signed creation and activation each commit once; identical signed creation replay is acknowledged without another effect or regressing activated state | Local integration tests with rewind, reject-duplicate and hidden-effect negative fixtures |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
 | Real local receiver restart after committing a signed event (programmatic opt-in) | First delivery commits once; an independently restarted child process retains the observer count and deduplication record; identical signed retry does not commit twice | Local child-process integration fixture with atomic disk-state replacement, lost-dedupe negative fixture, no-op restart negative fixture |
 | Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
@@ -82,6 +83,19 @@ states after each step. An absent adapter or missing state observation fails
 the check; it never claims generic receivers support these synthetic events.
 Two local broken fixtures show why a 409 must neither apply the premature
 transition nor mark the rejected message ID as already processed.
+Add `"delayedCreationReplayAfterActivation": true` for a separate
+**already-processed older-event replay** contract. The receiver uses the same
+local synthetic `test.resource.created` and `test.resource.activated` adapter
+and `GET /state?resourceId=<id>` observer. The harness sends creation, then
+activation, then an **identical signed retry of creation**. All three responses
+must equal `successStatus`; observed states must be `created`, `activated`,
+`activated`, while the observer count increments only for the first two.
+Broken fixtures catch rewinding the resource to `created`, rejecting an
+already-acknowledged creation with 409, and an extra hidden observed effect
+despite preserving the final state. This tests in-process idempotency while
+the dedupe record is available, not a particular provider's redelivery
+schedule, cross-restart persistence or external exactly-once effects. The
+option composes with `outOfOrderStateTransitions` using separate IDs.
 Add `"secretRotation": true` for a separate signing-key acceptance contract.
 Set `WFL_SECRET`, `WFL_PREVIOUS_SECRET` and `WFL_RETIRED_SECRET` to three
 distinct **synthetic** `whsec_` keys; do not place raw keys in configuration or

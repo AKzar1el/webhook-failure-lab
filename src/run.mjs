@@ -50,6 +50,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (outOfOrderStateTransitions !== undefined && typeof outOfOrderStateTransitions !== 'boolean') {
     throw new TypeError('outOfOrderStateTransitions must be a boolean');
   }
+  const delayedCreationReplayAfterActivation = config.delayedCreationReplayAfterActivation;
+  if (delayedCreationReplayAfterActivation !== undefined &&
+      typeof delayedCreationReplayAfterActivation !== 'boolean') {
+    throw new TypeError('delayedCreationReplayAfterActivation must be a boolean');
+  }
   const secretRotation = config.secretRotation;
   if (secretRotation !== undefined && typeof secretRotation !== 'boolean') {
     throw new TypeError('secretRotation must be a boolean');
@@ -124,7 +129,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
+    outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
+    secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
@@ -395,6 +401,49 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts[2] === expectedProcessedCount &&
         observedResourceStates[0] === 'missing' &&
         observedResourceStates[1] === 'created' &&
+        observedResourceStates[2] === 'activated',
+      httpStatuses, observedCounts, observedResourceStates, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.delayedCreationReplayAfterActivation) {
+    const resourceId = `wfl_resource_${randomUUID().replaceAll('-', '')}`;
+    const makeEvent = (type, name) => {
+      const messageId = `wfl_order_latecreate_${name}_${randomUUID().replaceAll('-', '')}`;
+      const rawBody = JSON.stringify({ type, timestamp: new Date(now * 1000).toISOString(),
+        data: { id: resourceId } });
+      return { rawBody, headers: {
+        'content-type': 'application/json', 'webhook-id': messageId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: messageId, timestamp: now, body: rawBody }),
+      } };
+    };
+    const create = makeEvent('test.resource.created', 'create');
+    const activate = makeEvent('test.resource.activated', 'activate');
+    const send = (event) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: event.headers, body: event.rawBody,
+    });
+    // Re-delivery of the exact creation event must not rewind an already activated resource.
+    const first = await send(create);
+    const afterCreate = await observeState(resourceId);
+    const second = await send(activate);
+    const afterActivation = await observeState(resourceId);
+    const third = await send(create);
+    const afterReplay = await observeState(resourceId);
+    const httpStatuses = [first.status, second.status, third.status];
+    const observedCounts = [afterCreate.processedCount,
+      afterActivation.processedCount, afterReplay.processedCount];
+    const observedResourceStates = [afterCreate.resourceState ?? null,
+      afterActivation.resourceState ?? null, afterReplay.resourceState ?? null];
+    const expectedProcessedCount = expectedCount + 2;
+    reports.push({ scenario: 'delayed_creation_replay_after_activation',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts[0] === expectedCount + 1 &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedResourceStates[0] === 'created' &&
+        observedResourceStates[1] === 'activated' &&
         observedResourceStates[2] === 'activated',
       httpStatuses, observedCounts, observedResourceStates, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
