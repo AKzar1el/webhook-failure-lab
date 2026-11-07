@@ -1228,3 +1228,95 @@ test('CLI exposes stale cached duplicate rejection without leaking signing mater
     await rm(directory, { recursive: true });
   }
 });
+
+test('concurrent authenticated payload collision accepts only one body per event ID', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, concurrentConflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const collision = result.scenarios.at(-1);
+    assert.equal(collision.scenario, 'concurrent_signed_event_id_collision');
+    assert.deepEqual(collision.httpStatuses, [200, 409]);
+    assert.equal(collision.observedProcessedCount, 2);
+    assert.equal(collision.expectedProcessedCount, 2);
+  });
+});
+
+test('concurrent collision catches non-atomic check then commit of both signed bodies', async () => {
+  await withServer({ unsafeRacyConcurrentConflict: true }, async (config) => {
+    const result = await runLab({ ...config, concurrentConflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const collision = result.scenarios.at(-1);
+    assert.deepEqual(collision.httpStatuses, [200, 200]);
+    assert.equal(collision.observedProcessedCount, 3);
+    assert.equal(collision.expectedProcessedCount, 2);
+    assert.equal(collision.passed, false);
+  });
+});
+
+test('concurrent collision catches receivers that silently acknowledge conflicting content', async () => {
+  await withServer({ unsafeAcknowledgeConflictingPayload: true }, async (config) => {
+    const result = await runLab({ ...config, concurrentConflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, false);
+    const collision = result.scenarios.at(-1);
+    assert.deepEqual(collision.httpStatuses, [200, 200]);
+    assert.equal(collision.observedProcessedCount, 2);
+    assert.equal(collision.passed, false);
+  });
+});
+
+test('concurrent collision catches a receiver that rejects after committing', async () => {
+  await withServer({ unsafeCommitConflictingPayload: true }, async (config) => {
+    const result = await runLab({ ...config, concurrentConflictingEventIdPayload: true }, { secret });
+    assert.equal(result.success, false);
+    const collision = result.scenarios.at(-1);
+    assert.deepEqual(collision.httpStatuses, [200, 409]);
+    assert.equal(collision.observedProcessedCount, 3);
+    assert.equal(collision.passed, false);
+  });
+});
+
+test('concurrent collision option rejects nonboolean values before traffic', async () => {
+  await withServer({}, async (config) => {
+    for (const concurrentConflictingEventIdPayload of [0, 1, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, concurrentConflictingEventIdPayload },
+        { secret }), /concurrentConflictingEventIdPayload/);
+    }
+    const state = await fetch(config.observer);
+    assert.equal((await state.json()).processedCount, 0);
+  });
+});
+
+test('concurrent collision composes with distinct and duplicate concurrency checks', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, concurrentConflictingEventIdPayload: true,
+      concurrentDistinctDeliveries: 2, concurrentDuplicateDeliveries: 4 }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'concurrent_signed_event_id_collision');
+    assert.equal(result.scenarios.at(-1).observedProcessedCount, 5);
+  });
+});
+
+test('CLI exposes concurrent collision without exposing signing material', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-conflict-race-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({
+      ...server.config, concurrentConflictingEventIdPayload: true,
+    }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'concurrent_signed_event_id_collision');
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

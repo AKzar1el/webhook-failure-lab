@@ -54,6 +54,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (conflictingEventIdPayload !== undefined && typeof conflictingEventIdPayload !== 'boolean') {
     throw new TypeError('conflictingEventIdPayload must be a boolean');
   }
+  const concurrentConflictingEventIdPayload = config.concurrentConflictingEventIdPayload;
+  if (concurrentConflictingEventIdPayload !== undefined &&
+      typeof concurrentConflictingEventIdPayload !== 'boolean') {
+    throw new TypeError('concurrentConflictingEventIdPayload must be a boolean');
+  }
   const resignedDuplicateDelivery = config.resignedDuplicateDelivery;
   if (resignedDuplicateDelivery !== undefined && typeof resignedDuplicateDelivery !== 'boolean') {
     throw new TypeError('resignedDuplicateDelivery must be a boolean');
@@ -102,7 +107,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload, resignedDuplicateDelivery,
+    outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload,
+    concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
@@ -215,6 +221,31 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
     reports.push({ scenario: 'concurrent_distinct_delivery',
       passed: httpStatuses.every((status) => status === options.successStatus) &&
         count === expectedProcessedCount,
+      httpStatuses, observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.concurrentConflictingEventIdPayload) {
+    const conflictId = `wfl_conflict_race_${randomUUID().replaceAll('-', '')}`;
+    const makeEvent = (type) => {
+      const rawBody = JSON.stringify({ type, timestamp: new Date(now * 1000).toISOString(),
+        data: { id: conflictId } });
+      return { rawBody, headers: { 'content-type': 'application/json',
+        'webhook-id': conflictId, 'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: conflictId, timestamp: now, body: rawBody }) } };
+    };
+    const events = [makeEvent('test.created'), makeEvent('test.updated')];
+    // Either valid payload may win, but exactly one may commit and the other must conflict.
+    const responses = await Promise.all(events.map((event) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: event.headers, body: event.rawBody,
+    })));
+    const httpStatuses = responses.map((response) => response.status).sort((a, b) => a - b);
+    const count = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    reports.push({ scenario: 'concurrent_signed_event_id_collision',
+      passed: httpStatuses[0] === options.successStatus &&
+        httpStatuses[1] === 409 && count === expectedProcessedCount,
       httpStatuses, observedProcessedCount: count, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

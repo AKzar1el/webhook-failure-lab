@@ -22,6 +22,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
 | Declared deduplication retention boundary and stale signed replay (programmatic opt-in) | Exact duplicate one second before retention expiry must not reprocess; unchanged signature at +301 seconds must be rejected without effect | Synthetic clock, premature-eviction and stale-replay acceptance broken receivers, no-op-clock negative fixture |
 | Same authenticated delivery ID reused with different signed payload (opt-in) | First signed event commits once; identical signed retry is idempotent; different validly signed body with same ID returns 409 without another effect | Local fixture catches silently acknowledged conflicts and reject-but-commit broken receivers |
+| Concurrent distinct signed payloads sharing one event ID (opt-in) | Exactly one request accepted and the other returns HTTP 409 (either order); observer count increases once | Local racy check-before-commit, silent-acknowledge and reject-after-commit negative fixtures |
 | Same ID and body re-signed at a different fresh timestamp (opt-in) | Both validly signed deliveries are acknowledged; first commits once, second makes no new observed effect | Local fixture catches signature-keyed deduplication and rejection of valid re-signatures; CLI config and composition regressions |
 | Correctly signed event dated one hour in the future (opt-in) | Reject 4xx without committing any new observed effect | Local negative fixtures detect accepted future timestamps and rejected events that still commit; no system clock change |
 | Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
@@ -153,6 +154,19 @@ silently acknowledge the changed body or reject it after committing another
 effect. This stricter rule is opt-in because it is a receiver/application
 contract, **not** a universal provider guarantee that event IDs never carry
 revised payloads. Keep the test adapter local-only.
+
+Enable `"concurrentConflictingEventIdPayload": true` to test the related
+**atomic** collision contract. Two different bodies, each signed correctly
+with the same fresh `webhook-id`, are sent together. One must return
+`successStatus` and the other **409**, in either order; the observer must
+increase by one effect. A local negative receiver deliberately lets both
+requests read an empty deduplication record before both commit, proving the
+probe detects a check-then-write race. Other fixtures acknowledge the
+conflict without 409 or reject only after committing. This two-request
+probe does not exhaustively explore all schedules, prove atomicity of
+external effects, or apply to providers without an immutable-ID contract.
+Omitting the option preserves the four baseline checks. It composes with
+the existing concurrency checks.
 
 Enable `"resignedDuplicateDelivery": true` in local CLI configuration to
 exercise a separate **same-event-ID re-signing** contract. The runner sends
