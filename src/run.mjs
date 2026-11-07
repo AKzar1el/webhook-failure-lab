@@ -67,6 +67,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
       typeof rejectTamperedDuplicateSignature !== 'boolean') {
     throw new TypeError('rejectTamperedDuplicateSignature must be a boolean');
   }
+  const rejectStaleDuplicateSignature = config.rejectStaleDuplicateSignature;
+  if (rejectStaleDuplicateSignature !== undefined &&
+      typeof rejectStaleDuplicateSignature !== 'boolean') {
+    throw new TypeError('rejectStaleDuplicateSignature must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -98,7 +103,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, lostAckAfterCommit,
     outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload, resignedDuplicateDelivery,
-    rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature,
+    rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
@@ -558,6 +563,33 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
     const httpStatuses = [original.status, tampered.status];
     const observedCounts = [afterOriginal, afterTampered];
     reports.push({ scenario: 'tampered_duplicate_signature',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectStaleDuplicateSignature) {
+    const duplicateId = `wfl_staledup_${randomUUID().replaceAll('-', '')}`;
+    const duplicateBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: duplicateId } });
+    // Both HMACs are authentic: the cached ID must not bypass timestamp freshness.
+    const send = (timestamp) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': duplicateId,
+        'webhook-timestamp': String(timestamp),
+        'webhook-signature': sign({ secret, id: duplicateId, timestamp, body: duplicateBody }) },
+      body: duplicateBody,
+    });
+    const original = await send(now);
+    const afterOriginal = await observe();
+    const stale = await send(now - 3600);
+    const afterStale = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [original.status, stale.status];
+    const observedCounts = [afterOriginal, afterStale];
+    reports.push({ scenario: 'stale_cached_duplicate_signature',
       passed: httpStatuses[0] === options.successStatus &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
         observedCounts.every((count) => count === expectedProcessedCount),

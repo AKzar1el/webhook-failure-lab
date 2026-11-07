@@ -222,13 +222,32 @@ The test verifies an observable signature-validation ordering contract for a
 local Standard Webhooks receiver. It is not a proof of side effects outside
 the caller-provided observer or an exactly-once guarantee.
 
+### Opt-in freshness-before-deduplication check
+
+Add `"rejectStaleDuplicateSignature": true` to `lab.json` to catch receivers
+that return a success response for a **cached webhook ID before checking the
+timestamp freshness of the incoming signed replay**. The runner accepts a
+fresh signed event, then resends the same ID and byte-identical body with a
+second, correctly calculated HMAC covering a timestamp one hour in the past.
+The second request must be rejected with a configured 4xx response and must
+not record a second observed effect. The scenario does not change the system
+clock or wait for a signature to expire.
+
+Two deliberately broken fixtures demonstrate stale cached-ID acceptance and
+rejection after committing a second effect. Unlike the baseline stale event,
+this replay has a **previously accepted** event ID; unlike the tampered-HMAC
+check, both HMACs are authentic. The opt-in contract assumes a 300-second
+Standard Webhooks tolerance and reasonably synchronized clocks. As with all
+other checks, the observer is caller-supplied and cannot establish the absence
+of unobserved business side effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery and concurrent distinct-event processing, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, same-ID re-signed retries, future-dated signature rejection, and duplicate authentication before deduplication. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
+- The opt-in checks cover concurrent duplicate delivery and concurrent distinct-event processing, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, same-ID re-signed retries, future-dated signature rejection, duplicate authentication before deduplication, and timestamp freshness before cached-ID deduplication. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

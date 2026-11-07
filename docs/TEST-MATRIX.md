@@ -25,6 +25,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Same ID and body re-signed at a different fresh timestamp (opt-in) | Both validly signed deliveries are acknowledged; first commits once, second makes no new observed effect | Local fixture catches signature-keyed deduplication and rejection of valid re-signatures; CLI config and composition regressions |
 | Correctly signed event dated one hour in the future (opt-in) | Reject 4xx without committing any new observed effect | Local negative fixtures detect accepted future timestamps and rejected events that still commit; no system clock change |
 | Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
+| Previously processed event ID re-signed with a stale timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the past must be rejected 4xx without another effect | Local negative fixtures detect dedupe-before-freshness acknowledgement and reject-after-commit mistakes |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -190,6 +191,20 @@ not bypass verification. Two deliberately broken local receivers either
 acknowledge the unauthenticated duplicate or commit an additional effect before
 returning 401. The check is opt-in, uses only synthetic keys and loopback HTTP,
 and does not establish unseen external business-effect correctness.
+
+Enable `"rejectStaleDuplicateSignature": true` in local CLI configuration
+to verify that **freshness precedes cached-ID deduplication**. The runner first
+delivers a fresh, valid signed event and then sends the **same ID and raw
+body**, authenticated with an independent valid HMAC whose timestamp is
+3600 seconds in the past. The cached-ID replay must return a configured
+4xx rejection without another observed effect. This is distinct from the
+baseline stale-timestamp check on an **unseen** ID, the invalid-HMAC duplicate
+check, and the synthetic-clock retention test. Two deliberately broken
+receivers either acknowledge the stale cached ID or return 401 after an extra
+effect. No clock changes, delayed requests or production keys are involved.
+This opt-in rule assumes a Standard Webhooks receiver enforcing a 300-second
+timestamp tolerance; passing establishes only the caller-reported count, not
+the absence of external effects.
 
 ## Bounded next scenarios (not implemented yet)
 
