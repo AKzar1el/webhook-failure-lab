@@ -25,6 +25,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   unsafeFirstSignatureOnly = false, unsafeAcceptInvalidMultiSignature = false,
   unsafeCommitInvalidMultiSignatureBeforeReject = false,
+  unsafeNormalizeTimestamp = false, unsafeCommitNoncanonicalBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false,
   supportVersionedUpdates = true, unsafeApplyStaleVersionedUpdate = false,
@@ -81,7 +82,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       if (body.length > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
     }
     const id = req.headers['webhook-id'];
-    const ts = Number(req.headers['webhook-timestamp']);
+    const timestampHeader = req.headers['webhook-timestamp'];
+    const ts = Number(timestampHeader);
     const receiverNow = clock();
     const effectiveRetention = unsafePrematureRetentionEviction
       ? Math.floor(dedupeRetentionSeconds / 2) : dedupeRetentionSeconds;
@@ -123,7 +125,11 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const signature = firstOnly
       ? String(req.headers['webhook-signature'] ?? '').split(/\s+/)[0]
       : req.headers['webhook-signature'];
-    const metadata = { id, timestamp: ts, body, signature,
+    const noncanonicalTimestamp = typeof timestampHeader === 'string' &&
+      timestampHeader !== String(ts);
+    const normalizeTestTimestamp = unsafeNormalizeTimestamp && typeof id === 'string' &&
+      id.startsWith('wfl_noncanonical_');
+    const metadata = { id, timestamp: normalizeTestTimestamp ? ts : timestampHeader, body, signature,
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
       ts > receiverNow + 300;
@@ -140,6 +146,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
         id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (unsafeCommitNoncanonicalBeforeReject && noncanonicalTimestamp &&
+          typeof id === 'string' && id.startsWith('wfl_noncanonical_')) {
+        processedCount += 1;
+      }
       if (unsafeCommitInvalidMultiSignatureBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_')) {
         processedCount += 1;

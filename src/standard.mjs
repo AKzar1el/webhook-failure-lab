@@ -24,7 +24,12 @@ export function sign({ secret, id, timestamp, body }) {
 }
 
 export function verify({ secret, id, timestamp, body, signature, now = Math.floor(Date.now() / 1000), tolerance = 300 }) {
-  if (!Number.isSafeInteger(Number(timestamp)) || Math.abs(now - Number(timestamp)) > tolerance || typeof signature !== 'string') {
+  // The timestamp is part of the signed header text. Numeric normalization would
+  // accept altered wire values (e.g. leading zeros or a decimal suffix).
+  if ((typeof timestamp !== 'number' && typeof timestamp !== 'string') ||
+      (typeof timestamp === 'string' && !/^(0|[1-9][0-9]*)$/.test(timestamp)) ||
+      !Number.isSafeInteger(Number(timestamp)) ||
+      Math.abs(now - Number(timestamp)) > tolerance || typeof signature !== 'string') {
     return false;
   }
   let expected;
