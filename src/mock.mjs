@@ -10,6 +10,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
+  unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
@@ -26,7 +27,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   let processedCount = 0;
   const pendingRaces = new Map();
   let distinctBatchCommitted = false;
-  function rendezvous(id) {
+  function rendezvous(id, expected = 4) {
     return new Promise((resolve) => {
       let group = pendingRaces.get(id);
       if (!group) {
@@ -42,7 +43,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         for (const waiter of group.waiters) waiter();
       }
       group.waiters.push(resolve);
-      if (group.waiters.length === 4) release();
+      if (group.waiters.length === expected) release();
     });
   }
   const server = createServer(async (req, res) => {
@@ -120,6 +121,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     }
     if (typeof id === 'string' && id.startsWith('wfl_conflict_')) {
       const priorBody = seenConflictBodies.get(id);
+      if (unsafeRacyConcurrentConflict && id.startsWith('wfl_conflict_race_')) {
+        // Both requests read the empty dedupe state before either is allowed to commit.
+        await rendezvous(id, 2);
+      }
       if (priorBody !== undefined) {
         if (priorBody !== body) {
           // Broken fixtures either hide a signed ID collision or reject it after committing.

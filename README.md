@@ -168,6 +168,25 @@ webhook provider**. Enable it only for a local receiver that promises
 immutable payloads per delivery ID and supports 409 for a conflict. It
 does not prove the absence of unobserved external effects.
 
+### Opt-in concurrent conflicting-payload race
+
+Add `"concurrentConflictingEventIdPayload": true` to `lab.json` to send two
+**different, independently and correctly signed payloads with the same new
+delivery ID** concurrently. The receiver must return one `successStatus`
+and one **409 Conflict**, in either order, and its observer count must rise by
+exactly one. This detects a check-then-insert idempotency race that can evade
+the sequential collision check, as well as silent acknowledgement or
+reject-after-commit defects. The local regression suite contains fixtures for
+all three bugs. The option composes with both concurrent duplicate and
+concurrent distinct-event checks; without the option, the default four checks
+are unchanged.
+
+Only enable this **strict, atomic event-ID immutability contract** when your
+local receiver promises 409 for an authenticated collision. Two concurrent
+requests are a bounded race probe, not proof that every possible scheduling
+interleaving has been explored. The observer remains caller-controlled and
+cannot establish exactly-once external business effects.
+
 ### Opt-in freshly re-signed duplicate delivery
 
 Add `"resignedDuplicateDelivery": true` to `lab.json` to check an event-ID-based
