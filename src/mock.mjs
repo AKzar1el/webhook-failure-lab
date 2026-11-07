@@ -8,6 +8,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
+  supportCommitted503Fault = true, unsafeForgetCommitted503Dedupe = false,
+  unsafeRejectCommitted503BeforeProcess = false,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeRacyConcurrentConflict = false,
@@ -27,6 +29,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   const seenResignedSignatures = new Set();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
+  const committed503Ids = new Set();
   const resourceStates = new Map();
   let processedCount = 0;
   const pendingRaces = new Map();
@@ -233,6 +236,16 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       }
       res.destroy();
       return;
+    }
+    if (supportCommitted503Fault && req.headers['x-wfl-test-fault'] === 'commit-then-respond-503-once' &&
+        typeof id === 'string' && id.startsWith('wfl_committed503_') && !committed503Ids.has(id)) {
+      committed503Ids.add(id);
+      if (!unsafeRejectCommitted503BeforeProcess && !seen.has(id)) {
+        processedCount += 1;
+        // Broken receiver commits before its 503, but fails to retain the dedupe key.
+        if (!unsafeForgetCommitted503Dedupe) seen.add(id);
+      }
+      res.writeHead(503); res.end('synthetic error after commit'); return;
     }
     if ((unsafeCoalesceDistinctEvents || unsafeRejectConcurrentDistinct) &&
         typeof id === 'string' && id.startsWith('wfl_unique_')) {

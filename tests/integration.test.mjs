@@ -1597,3 +1597,94 @@ test('CLI exposes multi-signature header probe without leaking signing material'
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in committed HTTP 503 retry preserves one effect across identical signed redelivery', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, retryAfterCommittedError: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.scenario, 'retry_after_committed_503');
+    assert.equal(probe.passed, true);
+    assert.deepEqual(probe.httpStatuses, [503, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 2]);
+    assert.equal(probe.expectedProcessedCount, 2);
+  });
+});
+
+test('committed HTTP 503 retry detects a lost idempotency record after first commit', async () => {
+  await withServer({ unsafeForgetCommitted503Dedupe: true }, async (config) => {
+    const result = await runLab({ ...config, retryAfterCommittedError: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((item) => item.passed));
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.passed, false);
+    assert.deepEqual(probe.httpStatuses, [503, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 3]);
+  });
+});
+
+test('committed HTTP 503 retry detects a receiver that failed before committing', async () => {
+  await withServer({ unsafeRejectCommitted503BeforeProcess: true }, async (config) => {
+    const result = await runLab({ ...config, retryAfterCommittedError: true }, { secret });
+    assert.equal(result.success, false);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.passed, false);
+    assert.deepEqual(probe.httpStatuses, [503, 200]);
+    assert.deepEqual(probe.observedCounts, [1, 2]);
+  });
+});
+
+test('committed HTTP 503 retry fails when test-only fault injection is ignored', async () => {
+  await withServer({ supportCommitted503Fault: false }, async (config) => {
+    const result = await runLab({ ...config, retryAfterCommittedError: true }, { secret });
+    assert.equal(result.success, false);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.passed, false);
+    assert.deepEqual(probe.httpStatuses, [200, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 2]);
+  });
+});
+
+test('committed HTTP 503 retry requires boolean opt-in before loopback traffic', async () => {
+  await withServer({}, async (config) => {
+    for (const retryAfterCommittedError of [0, 1, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, retryAfterCommittedError }, { secret }),
+        /retryAfterCommittedError/);
+    }
+    assert.equal((await (await fetch(config.observer)).json()).processedCount, 0);
+  });
+});
+
+test('committed HTTP 503 retry composes with rejected-before-processing and lost-ack retries', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, retryAfterTransientFailure: true,
+      lostAckAfterCommit: true, retryAfterCommittedError: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.scenario, 'retry_after_committed_503');
+    assert.deepEqual(probe.observedCounts, [4, 4]);
+  });
+});
+
+test('CLI reports committed HTTP 503 retry without signing material', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-committed503-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, retryAfterCommittedError: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [503, 200]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes(secret.slice(6)));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

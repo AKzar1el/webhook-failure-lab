@@ -15,6 +15,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Concurrent copies of one freshly signed event (opt-in) | All acknowledged; observer count rises exactly once | Local integration test, plus deliberately non-atomic negative receiver fixture |
 | Concurrent independently signed events with distinct IDs (opt-in) | All acknowledged; observer count increases once per unique event | Local integration tests with deliberately broken global-coalescing and busy-rejection fixtures |
 | First delivery rejected with injected HTTP 503, then same signed event retried (opt-in) | First attempt leaves observer unchanged; retry succeeds and increments it once | Local integration test, plus fixture that marks rejected events as processed |
+| Committed event returns HTTP 503, then identical signed delivery retried (opt-in) | First attempt returns 503 *after* one observed effect; retry succeeds with no additional effect | Local integration tests with missing dedupe key, precommit failure, and ignored fault negative fixtures |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
@@ -42,6 +43,16 @@ must return 503 **before processing** when the first request contains
 `x-wfl-test-fault: reject-before-process-once`; the lab then resends the same
 signed event without that header. Receivers without this explicit test adapter
 fail the first-status assertion. Do not enable the adapter on public services.
+Add `"retryAfterCommittedError": true` for a separate **post-commit HTTP 503**
+contract. The receiver's development-only adapter must recognize
+`x-wfl-test-fault: commit-then-respond-503-once` on the first fresh signed
+`wfl_committed503_` event. It must commit the effect and dedupe key, then return
+HTTP 503. The harness observes the increment before retrying the identical
+signed event without the fault header; that retry must succeed without another
+effect. Broken fixtures fail when the receiver loses dedupe state, rejects
+before committing, or ignores the explicit fault. This is neither the
+pre-commit 503 check nor the transport-drop check. No automated backoff or
+external business-effect guarantee is asserted; never expose the adapter.
 Add `"concurrentDistinctDeliveries": 4` (integer 2-8) for a separate
 **distinct-event concurrency** check. The harness concurrently sends N
 independently signed, fresh events with different webhook IDs and payload IDs;

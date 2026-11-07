@@ -52,6 +52,24 @@ Add `"retryAfterTransientFailure": true` to `lab.json` to enable a fifth check (
 
 This check is opt-in because ordinary webhook handlers will not understand that injection header. If your handler ignores it, the lab reports a failed first-attempt status rather than silently claiming retry coverage. The built-in loopback fixture implements the adapter; its deliberately broken variant is tested in `tests/integration.test.mjs`. **Never enable fault injection on public or production handlers.** This is a controlled failed-before-processing retry, not an automatic retry scheduler, lost-acknowledgement simulation, crash-recovery proof, or exactly-once guarantee.
 
+### Optional committed delivery followed by HTTP 503
+
+Add `"retryAfterCommittedError": true` to `lab.json` for a distinct **ambiguous
+server-error** contract. A development-only local receiver must implement
+`x-wfl-test-fault: commit-then-respond-503-once`: for the first freshly signed
+`wfl_committed503_` event, commit one effect **and** its deduplication key,
+then respond HTTP 503. The lab observes the committed count immediately after
+that response and retries the **same signed event without the fault header**.
+The retry must return `successStatus` without another observed effect.
+
+Unlike `retryAfterTransientFailure`, the first failed HTTP response comes
+**after** a commit. Unlike `lostAckAfterCommit`, the receiver actually returns
+HTTP 503 rather than dropping the connection. The negative fixtures catch a
+lost deduplication record, a failure before committing, and an ignored fault
+adapter. Omitting the flag retains the four baseline scenarios. This is not a
+general retry scheduler or proof of external exactly-once side effects. Never
+enable this unsigned fault-control header or the observer on production routes.
+
 ### Optional lost acknowledgement after commit
 
 Add `"lostAckAfterCommit": true` to local `lab.json` to simulate an **ambiguous, already-committed delivery**. This requires a separate, **development-only local adapter**: for a fresh, correctly signed event with `x-wfl-test-fault: commit-then-drop-ack-once`, the receiver must record one effect and its idempotency key, then close the HTTP connection **without sending a response**. The harness expects a transport error and observes the committed count increase by one. It then retries the **identical event ID, body, timestamp, and signature**, without the fault header, and requires an accepted response **without any second observed effect**.
@@ -321,7 +339,7 @@ observer cannot prove the absence of unobserved external effects.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery and concurrent distinct-event processing, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state and rejection of retired-key replays with cached IDs, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, changed-body unauthenticated collision rejection, same-ID re-signed retries, future-dated signature rejection, duplicate authentication before deduplication, timestamp freshness before cached-ID deduplication, and multiple HMACs in a single signature header. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
+- The opt-in checks cover concurrent duplicate delivery and concurrent distinct-event processing, injected retries after both pre-commit HTTP 503 and post-commit HTTP 503, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state and rejection of retired-key replays with cached IDs, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, changed-body unauthenticated collision rejection, same-ID re-signed retries, future-dated signature rejection, duplicate authentication before deduplication, timestamp freshness before cached-ID deduplication, and multiple HMACs in a single signature header. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction
