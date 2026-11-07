@@ -21,6 +21,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   unsafeFirstSignatureOnly = false, unsafeAcceptInvalidMultiSignature = false,
   unsafeCommitInvalidMultiSignatureBeforeReject = false,
+  unsafeVerifyBodyIdInsteadOfHeader = false, unsafeCommitTamperedIdBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -114,7 +115,14 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const signature = firstOnly
       ? String(req.headers['webhook-signature'] ?? '').split(/\s+/)[0]
       : req.headers['webhook-signature'];
-    const metadata = { id, timestamp: ts, body, signature,
+    let authenticatedId = id;
+    if (unsafeVerifyBodyIdInsteadOfHeader && typeof id === 'string' &&
+        id.startsWith('wfl_idtamper_') && id.endsWith('_altered')) {
+      // Broken receiver substitutes the JSON payload ID for the authenticated header.
+      try { authenticatedId = JSON.parse(body)?.data?.id; }
+      catch { authenticatedId = undefined; }
+    }
+    const metadata = { id: authenticatedId, timestamp: ts, body, signature,
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
       ts > receiverNow + 300;
@@ -131,6 +139,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
         id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (unsafeCommitTamperedIdBeforeReject && typeof id === 'string' &&
+          id.startsWith('wfl_idtamper_') && id.endsWith('_altered')) {
+        processedCount += 1;
+      }
       if (unsafeCommitInvalidMultiSignatureBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_')) {
         processedCount += 1;

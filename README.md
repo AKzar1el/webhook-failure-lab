@@ -333,6 +333,23 @@ provider-specific signature schemes. The baseline four checks remain unchanged
 when omitted. Only local synthetic secrets and loopback HTTP are used; the
 observer cannot prove the absence of unobserved external effects.
 
+### Opt-in signed webhook ID integrity check
+
+Add `"rejectTamperedEventId": true` to your local `lab.json`. The runner
+delivers a fresh, correctly signed event, then replays the **same raw body,
+timestamp and HMAC** with only the `webhook-id` header changed. Because the
+event ID is an input to the Standard Webhooks v1 HMAC, the second request
+must return a configured 4xx rejection without increasing the caller-provided
+`processedCount`. The original event must be accepted once.
+
+Two negative loopback fixtures prove that the check detects receivers that
+incorrectly verify an event ID copied from the JSON body instead of the
+signed header, or reject the forged header only **after** another observed
+effect. This differs from the baseline body-tampering check, which changes
+payload bytes but leaves the event ID intact. No signing keys or signatures
+appear in the JSON results. All requests use synthetic credentials and
+loopback only; the observer cannot independently prove external effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.

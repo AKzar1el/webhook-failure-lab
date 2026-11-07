@@ -31,6 +31,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
 | Cached ID replayed with a retired signing key (opt-in) | Fresh delivery with accepted previous key commits once; same ID/body/timestamp authenticated under revoked key rejected without another effect | Local negative fixtures detect cached-ID acknowledgement before key validation and reject-after-commit, with strict three-key preflight |
 | Multiple v1 signatures in a single header (opt-in) | Valid second or first token is accepted once; separate event with two invalid tokens rejected without effect | Local negative fixtures catch first-only verification, acceptance of an invalid list and rejection after extra effect |
+| Changed `webhook-id` header with original valid HMAC for another ID (opt-in) | Fresh valid event accepted once; exact same signed body, timestamp and HMAC under a *different* header ID rejected without effect | Local negative receivers verify ID from JSON payload instead of header or reject only after an extra observed commit |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -270,6 +271,16 @@ effect. No clock changes, delayed requests or production keys are involved.
 This opt-in rule assumes a Standard Webhooks receiver enforcing a 300-second
 timestamp tolerance; passing establishes only the caller-reported count, not
 the absence of external effects.
+
+Enable `"rejectTamperedEventId": true` to check that the event identifier
+actually comes from the authenticated `webhook-id` header. The harness first
+sends a new event signed with its original ID, then changes **only the ID
+header** and reuses the original signature, timestamp and body. The modified
+request must return a configured 4xx rejection and cannot increase
+`processedCount`. Broken local receivers that substitute `data.id` from the
+JSON body into their HMAC verification or commit before rejecting are caught
+by deterministic negative tests. Omitting the opt-in leaves baseline behavior
+unchanged. The check does not prove unobserved external side effects.
 
 ## Bounded next scenarios (not implemented yet)
 
