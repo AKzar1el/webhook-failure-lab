@@ -54,6 +54,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (rejectRetiredKeyDuplicate !== undefined && typeof rejectRetiredKeyDuplicate !== 'boolean') {
     throw new TypeError('rejectRetiredKeyDuplicate must be a boolean');
   }
+  const multiSignatureHeader = config.multiSignatureHeader;
+  if (multiSignatureHeader !== undefined && typeof multiSignatureHeader !== 'boolean') {
+    throw new TypeError('multiSignatureHeader must be a boolean');
+  }
   const conflictingEventIdPayload = config.conflictingEventIdPayload;
   if (conflictingEventIdPayload !== undefined && typeof conflictingEventIdPayload !== 'boolean') {
     throw new TypeError('conflictingEventIdPayload must be a boolean');
@@ -116,7 +120,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, lostAckAfterCommit,
-    outOfOrderStateTransitions, secretRotation, rejectRetiredKeyDuplicate, conflictingEventIdPayload,
+    outOfOrderStateTransitions, secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
+    conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
@@ -691,6 +696,44 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
       passed: httpStatuses[0] === options.successStatus &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
         httpStatuses[1] !== 409 &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.multiSignatureHeader) {
+    const multiId = `wfl_multisig_${randomUUID().replaceAll('-', '')}`;
+    const rejectId = `wfl_multisig_reject_${randomUUID().replaceAll('-', '')}`;
+    const makeBody = (eventId) => JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const multiBody = makeBody(multiId);
+    const rejectBody = makeBody(rejectId);
+    const corrupt = (value, index) => value.slice(0, index) +
+      (value[index] === 'A' ? 'B' : 'A') + value.slice(index + 1);
+    const valid = sign({ secret, id: multiId, timestamp: now, body: multiBody });
+    const rejectValid = sign({ secret, id: rejectId, timestamp: now, body: rejectBody });
+    const invalid = corrupt(valid, 3);
+    const send = (messageId, rawBody, signature) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': messageId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: rawBody,
+    });
+    // A verifier must search every signature token, while never accepting an all-invalid list.
+    const validSecond = await send(multiId, multiBody, `${invalid} ${valid}`);
+    const afterValidSecond = await observe();
+    const validFirst = await send(multiId, multiBody, `${valid} ${invalid}`);
+    const afterValidFirst = await observe();
+    const invalidOnly = await send(rejectId, rejectBody,
+      `${corrupt(rejectValid, 3)} ${corrupt(rejectValid, 4)}`);
+    const afterInvalidOnly = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [validSecond.status, validFirst.status, invalidOnly.status];
+    const observedCounts = [afterValidSecond, afterValidFirst, afterInvalidOnly];
+    reports.push({ scenario: 'multi_signature_header',
+      passed: httpStatuses[0] === options.successStatus &&
+        httpStatuses[1] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[2]) &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;

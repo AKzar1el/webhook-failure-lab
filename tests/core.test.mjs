@@ -12,6 +12,16 @@ test('signs in Standard Webhooks v1 format', () => {
   assert.match(signature, /^v1,[A-Za-z0-9+/]+=*$/);
   assert.equal(verify({ ...sample, signature, now: sample.timestamp }), true);
 });
+test('multi-signature header accepts any authentic v1 entry, not just the first', () => {
+  const valid = sign(sample);
+  const invalid = valid.slice(0, 3) + (valid[3] === 'A' ? 'B' : 'A') + valid.slice(4);
+  const check = (signature) => verify({ ...sample, signature, now: sample.timestamp });
+  assert.equal(check(`${invalid} ${valid}`), true);
+  assert.equal(check(`${valid} ${invalid}`), true);
+  assert.equal(check(`${invalid} ${invalid}`), false);
+  assert.equal(check(`v2,ignored ${invalid}`), false);
+  assert.equal(check(''), false);
+});
 test('tampered payload is rejected', () => {
   const signature = sign(sample);
   assert.equal(verify({ ...sample, body: '{"x":2}', signature, now: sample.timestamp }), false);

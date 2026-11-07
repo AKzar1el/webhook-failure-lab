@@ -1506,3 +1506,94 @@ test('CLI reports retired-key replay without exposing any of three synthetic sec
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in multi-signature headers accept either valid token position and reject all-invalid', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, multiSignatureHeader: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.scenario, 'multi_signature_header');
+    assert.deepEqual(probe.httpStatuses, [200, 200, 401]);
+    assert.deepEqual(probe.observedCounts, [2, 2, 2]);
+    assert.equal(probe.expectedProcessedCount, 2);
+  });
+});
+
+test('multi-signature header catches receivers that verify only the first signature', async () => {
+  await withServer({ unsafeFirstSignatureOnly: true }, async (config) => {
+    const result = await runLab({ ...config, multiSignatureHeader: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((item) => item.passed));
+    const probe = result.scenarios.at(-1);
+    assert.deepEqual(probe.httpStatuses, [401, 200, 401]);
+    assert.deepEqual(probe.observedCounts, [1, 2, 2]);
+    assert.equal(probe.passed, false);
+  });
+});
+
+test('multi-signature header catches receivers that accept two invalid signatures', async () => {
+  await withServer({ unsafeAcceptInvalidMultiSignature: true }, async (config) => {
+    const result = await runLab({ ...config, multiSignatureHeader: true }, { secret });
+    assert.equal(result.success, false);
+    const probe = result.scenarios.at(-1);
+    assert.deepEqual(probe.httpStatuses, [200, 200, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 2, 3]);
+    assert.equal(probe.passed, false);
+  });
+});
+
+test('multi-signature header catches a rejected invalid signature that still commits', async () => {
+  await withServer({ unsafeCommitInvalidMultiSignatureBeforeReject: true }, async (config) => {
+    const result = await runLab({ ...config, multiSignatureHeader: true }, { secret });
+    assert.equal(result.success, false);
+    const probe = result.scenarios.at(-1);
+    assert.deepEqual(probe.httpStatuses, [200, 200, 401]);
+    assert.deepEqual(probe.observedCounts, [2, 2, 3]);
+    assert.equal(probe.passed, false);
+  });
+});
+
+test('multi-signature flag rejects malformed values before any traffic', async () => {
+  await withServer({}, async (config) => {
+    for (const multiSignatureHeader of [0, 1, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, multiSignatureHeader }, { secret }),
+        /multiSignatureHeader/);
+    }
+    const response = await fetch(config.observer);
+    assert.equal((await response.json()).processedCount, 0);
+  });
+});
+
+test('multi-signature header composes with rotation and re-signed duplicate checks', async () => {
+  await withServer({ previousSecret, retiredSecret }, async (config) => {
+    const result = await runLab({ ...config, multiSignatureHeader: true,
+      secretRotation: true, resignedDuplicateDelivery: true }, { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    assert.equal(result.scenarios.at(-1).scenario, 'multi_signature_header');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [4, 4, 4]);
+  });
+});
+
+test('CLI exposes multi-signature header probe without leaking signing material', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-multisig-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, multiSignatureHeader: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'multi_signature_header');
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 200, 401]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes(secret.slice(6)));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

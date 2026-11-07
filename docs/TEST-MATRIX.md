@@ -29,6 +29,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Previously processed event ID re-signed with a stale timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the past must be rejected 4xx without another effect | Local negative fixtures detect dedupe-before-freshness acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
 | Cached ID replayed with a retired signing key (opt-in) | Fresh delivery with accepted previous key commits once; same ID/body/timestamp authenticated under revoked key rejected without another effect | Local negative fixtures detect cached-ID acknowledgement before key validation and reject-after-commit, with strict three-key preflight |
+| Multiple v1 signatures in a single header (opt-in) | Valid second or first token is accepted once; separate event with two invalid tokens rejected without effect | Local negative fixtures catch first-only verification, acceptance of an invalid list and rejection after extra effect |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -135,6 +136,18 @@ rejection-after-commit are exercised by deliberately broken local fixtures.
 The baseline's four scenarios are unchanged; this check composes with
 `secretRotation`, and does not establish real provider retirement timing,
 secret storage correctness, or unobserved external effects.
+
+Enable `"multiSignatureHeader": true` to test a space-separated Standard
+Webhooks signature header. A fresh event signed with the configured synthetic
+current key is sent with an invalid v1 token first and a valid v1 token second;
+an identical duplicate is sent with the valid token first. Both must be
+acknowledged, with only one new observed effect. A separate event carrying
+two invalid tokens must return a configured 4xx rejection without an effect.
+The runner validates the boolean before sending any requests, never includes
+signatures in reports, and does not require previous or retired keys. Broken
+local fixtures catch first-token-only verification, invalid-list acceptance,
+and rejection after committing. This does not prove a real provider's key
+rotation behavior, external business effects or a receiver's key management.
 
 Use `retentionWindowSeconds: 60` (integer 2-240) **only** with
 `runLab(config, { secret, advanceReceiverTime })`. A caller-owned callback
