@@ -5,6 +5,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
   unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
+  supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
+  unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -163,6 +165,22 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         processedCount += 1; seen.add(id);
       }
       res.writeHead(401); res.end(); return;
+    }
+    if (supportMalformedValidation && typeof id === 'string' &&
+        id.startsWith('wfl_malformed_')) {
+      let parseError = false;
+      try { JSON.parse(body); } catch { parseError = true; }
+      if (parseError) {
+        if (unsafeAcceptMalformedSignedPayload) {
+          processedCount += 1; seen.add(id);
+          res.writeHead(200); res.end('unparseable payload accepted'); return;
+        }
+        if (unsafePoisonMalformedDedupe) seen.add(id);
+        if (unsafeCommitMalformedBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(400); res.end('unparseable JSON'); return;
+      }
     }
     if (typeof id === 'string' && id.startsWith('wfl_conflict_')) {
       const priorBody = seenConflictBodies.get(id);
