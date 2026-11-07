@@ -89,6 +89,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
   if (rejectFutureSignedTimestamp !== undefined && typeof rejectFutureSignedTimestamp !== 'boolean') {
     throw new TypeError('rejectFutureSignedTimestamp must be a boolean');
   }
+  const rejectNoncanonicalTimestamp = config.rejectNoncanonicalTimestamp;
+  if (rejectNoncanonicalTimestamp !== undefined && typeof rejectNoncanonicalTimestamp !== 'boolean') {
+    throw new TypeError('rejectNoncanonicalTimestamp must be a boolean');
+  }
   const rejectTamperedDuplicateSignature = config.rejectTamperedDuplicateSignature;
   if (rejectTamperedDuplicateSignature !== undefined &&
       typeof rejectTamperedDuplicateSignature !== 'boolean') {
@@ -138,7 +142,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
-    rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
+    rejectFutureSignedTimestamp, rejectNoncanonicalTimestamp,
+    rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
@@ -850,6 +855,31 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectNoncanonicalTimestamp) {
+    // These HMACs authenticate the canonical integer but not the transmitted timestamp bytes.
+    const noncanonicalValues = [`0${now}`, `${now}.0`];
+    const httpStatuses = [];
+    const observedCounts = [];
+    for (const timestampHeader of noncanonicalValues) {
+      const malformedId = `wfl_noncanonical_${randomUUID().replaceAll('-', '')}`;
+      const malformedBody = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(), data: { id: malformedId } });
+      const response = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { 'content-type': 'application/json', 'webhook-id': malformedId,
+          'webhook-timestamp': timestampHeader,
+          'webhook-signature': sign({ secret, id: malformedId, timestamp: now, body: malformedBody }) },
+        body: malformedBody,
+      });
+      httpStatuses.push(response.status);
+      observedCounts.push(await observe());
+    }
+    reports.push({ scenario: 'noncanonical_signed_timestamp',
+      passed: httpStatuses.every((status) => options.rejectionStatuses.includes(status)) &&
+        observedCounts.every((count) => count === expectedCount),
+      httpStatuses, observedCounts, expectedProcessedCount: expectedCount });
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,

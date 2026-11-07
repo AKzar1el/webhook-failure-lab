@@ -28,6 +28,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Concurrent distinct signed payloads sharing one event ID (opt-in) | Exactly one request accepted and the other returns HTTP 409 (either order); observer count increases once | Local racy check-before-commit, silent-acknowledge and reject-after-commit negative fixtures |
 | Same ID and body re-signed at a different fresh timestamp (opt-in) | Both validly signed deliveries are acknowledged; first commits once, second makes no new observed effect | Local fixture catches signature-keyed deduplication and rejection of valid re-signatures; CLI config and composition regressions |
 | Correctly signed event dated one hour in the future (opt-in) | Reject 4xx without committing any new observed effect | Local negative fixtures detect accepted future timestamps and rejected events that still commit; no system clock change |
+| Modified textual timestamp header with HMAC for canonical integer (opt-in) | Reject leading-zero and decimal `.0` timestamp strings without observed effects; the original signature only covers canonical timestamp bytes | Local broken receiver fixtures detect numeric normalization before HMAC verification and rejected deliveries that still commit |
 | Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID re-signed with a stale timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the past must be rejected 4xx without another effect | Local negative fixtures detect dedupe-before-freshness acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
@@ -274,6 +275,18 @@ signatures, or reject future signatures after recording an effect. The
 scenario uses no wall-clock waits or system-clock changes; the runner and
 receiver should have reasonably synchronized clocks and a 300-second
 Standard Webhooks freshness policy. Passing cannot prove unobserved effects.
+
+Enable `"rejectNoncanonicalTimestamp": true` to test exact signature coverage
+of the textual `webhook-timestamp` header. The runner signs two independent
+synthetic event IDs using the current integer timestamp but transmits a
+leading-zero header for one and a decimal `.0` header for the other. A receiver
+must reject both 4xx without any observed effect even though a permissive
+numeric parser would yield the original number. The local Standard Webhooks
+verifier rejects noncanonical decimal strings; the broken fixtures detect
+numeric coercion before HMAC verification and rejection after an unintended
+commit. The option is boolean and composes with future-timestamp and
+multi-signature tests. No external endpoints, provider claims, or proof of
+unobserved business effects are involved.
 
 Enable `"rejectTamperedDuplicateSignature": true` in local CLI configuration
 to verify that **authentication precedes deduplication**. The runner first
