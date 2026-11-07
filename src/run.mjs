@@ -46,6 +46,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectInvalidSignedEventSchema !== 'boolean') {
     throw new TypeError('rejectInvalidSignedEventSchema must be a boolean');
   }
+  const rejectOversizedSignedPayload = config.rejectOversizedSignedPayload;
+  if (rejectOversizedSignedPayload !== undefined &&
+      typeof rejectOversizedSignedPayload !== 'boolean') {
+    throw new TypeError('rejectOversizedSignedPayload must be a boolean');
+  }
   const retryAfterRejectedSignature = config.retryAfterRejectedSignature;
   if (retryAfterRejectedSignature !== undefined &&
       typeof retryAfterRejectedSignature !== 'boolean') {
@@ -188,7 +193,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
-    rejectInvalidSignedEventSchema,
+    rejectInvalidSignedEventSchema, rejectOversizedSignedPayload,
     retryAfterRejectedSignature,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
@@ -413,6 +418,41 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const observedCounts = [afterInvalid, afterCorrected, afterReplay];
     reports.push({ scenario: 'invalid_signed_event_schema_retry',
       passed: httpStatuses[0] === 422 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectOversizedSignedPayload) {
+    const oversizedId = `wfl_oversize_${randomUUID().replaceAll('-', '')}`;
+    const event = { type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: oversizedId } };
+    const oversizedBody = JSON.stringify({ ...event, data: { ...event.data,
+      note: 'x'.repeat(2048) } });
+    const correctedBody = JSON.stringify(event);
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': oversizedId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: oversizedId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    // Valid HMACs do not exempt a payload from a local body-size policy.
+    const invalid = await send(oversizedBody);
+    const afterInvalid = await observe();
+    const corrected = await send(correctedBody);
+    const afterCorrected = await observe();
+    const replay = await send(correctedBody);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, corrected.status, replay.status];
+    const observedCounts = [afterInvalid, afterCorrected, afterReplay];
+    reports.push({ scenario: 'oversized_signed_payload_retry',
+      passed: httpStatuses[0] === 413 &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
         observedCounts[0] === expectedCount &&

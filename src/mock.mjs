@@ -9,6 +9,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
   supportEventSchemaValidation = true, unsafeAcceptInvalidEventSchema = false,
   unsafePoisonInvalidSchemaDedupe = false, unsafeCommitInvalidSchemaBeforeReject = false,
+  supportPayloadSizeValidation = true, unsafeAcceptOversizedSignedPayload = false,
+  unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
@@ -291,6 +293,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         }
         res.writeHead(422); res.end('invalid synthetic event schema'); return;
       }
+    }
+    if (supportPayloadSizeValidation && typeof id === 'string' &&
+        id.startsWith('wfl_oversize_') && Buffer.byteLength(body, 'utf8') > 1024) {
+      if (unsafeAcceptOversizedSignedPayload) {
+        processedCount += 1; seen.add(id);
+        res.writeHead(200); res.end('oversized signed payload accepted'); return;
+      }
+      if (unsafePoisonOversizedDedupe) seen.add(id);
+      if (unsafeCommitOversizedBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(413); res.end('synthetic body size limit exceeded'); return;
     }
     if (supportContentTypeValidation && typeof id === 'string' &&
         id.startsWith('wfl_media_') && req.headers['content-type'] !== 'application/json') {

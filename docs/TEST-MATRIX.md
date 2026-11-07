@@ -13,6 +13,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Valid signed JSON with application/json; charset=utf-8, followed by same-ID plain application/json (opt-in) | Accept both valid JSON media types with one observed effect despite an unsigned header change | Local broken receivers reject the legitimate charset parameter with 415 or dedupe by Content-Type and commit twice |
 | Signed pretty JSON and semantically identical compact JSON reusing the first HMAC (opt-in) | Accept the exact signed pretty bytes once; reject altered raw bytes without effect; accept an exact replay without another effect | Local broken receivers reserialize before verification, acknowledge cached ID before verifying altered bytes, or reject only after another effect |
 | Same signed event ID in two independent synthetic tenants, then wrong-key replay (opt-in) | Tenant A and B each commit once under their own signing key; a cached tenant-A ID signed by B's key is rejected without effect or 409 collision classification; exact retries dedupe within each tenant | Local negative fixtures catch globally keyed dedupe, premature collision classification, cross-tenant key acceptance, and reject-after-commit |
+| Correctly signed JSON exceeding a declared 1,024-byte local size cap, then corrected same-ID signed retry (opt-in) | Return 413 without effect or ID reservation; accept a corrected smaller independently signed body once, and dedupe exact replay | Broken localhost fixtures accept oversized input, poison deduplication on rejection, or return 413 after an observed commit |
 | Two independently signed IDs differing only in ASCII case, then exact retries (opt-in) | Both new IDs accepted and committed once each; exact retries acknowledged without additional observed effects | Local negative fixtures lowercase the dedupe key or reject the case variant as a collision |
 | Malformed JSON with valid HMAC, then corrected same-ID signed retry (opt-in) | First delivery rejected as invalid JSON without effect or dedupe record; corrected independently signed JSON with same ID accepted and applied exactly once | Local negative receivers accept the malformed body, poison the dedupe cache on reject, or commit before returning 400 |
 | Invalid HMAC on fresh event ID, followed by valid retry and identical replay (opt-in) | First signed-header tampering rejected without effect or reserved ID; identical event with correct signature commits once, and exact valid replay dedupes | Local negative fixtures catch cached IDs reserved on authentication failure, reject-after-commit effects, and accepting the invalid signature |
@@ -270,6 +271,18 @@ Missing local schema validation fails the scenario. This tests an explicitly
 declared local schema only: it does not imply that Standard Webhooks prescribes
 `data.id`, any universal JSON schema or provider retry behavior. The count
 is receiver-reported and cannot establish external exactly-once effects.
+
+Enable `"rejectOversizedSignedPayload": true` for a separate **local-only**
+payload-size policy check. The runner signs a valid JSON body exceeding 2 KiB
+under a fresh `wfl_oversize_` ID. A receiver enforcing a declared
+**1,024-byte UTF-8 body cap** must return **413**, without an observed effect
+or reserving that ID. An independently signed corrected JSON body using the
+same ID must then succeed exactly once; its exact replay must be acknowledged
+without another observed effect. Deliberately broken receivers accept the
+oversized payload, poison the deduplication cache upon rejection, or return
+413 only after an observed commit. Missing local enforcement fails closed.
+This opt-in policy is **not** a provider or Standard Webhooks size standard:
+the test covers only the declared local adapter and exposed processed count.
 
 Enable `"rejectUnauthenticatedCollision": true` to test the boundary between
 authentication and strict event-ID immutability. The harness first sends a
