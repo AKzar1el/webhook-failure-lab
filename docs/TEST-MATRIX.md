@@ -18,6 +18,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Committed event returns HTTP 503, then identical signed delivery retried (opt-in) | First attempt returns 503 *after* one observed effect; retry succeeds with no additional effect | Local integration tests with missing dedupe key, precommit failure, and ignored fault negative fixtures |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
+| Older distinct signed resource-version update delivered after a newer version (opt-in) | Signed versions 1 and 3 are accepted; delayed signed version 2 receives 409 with no additional effect and observed version remains 3 | Synthetic adapter and local negative receivers that apply stale versions or reject only after committing |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
 | Real local receiver restart after committing a signed event (programmatic opt-in) | First delivery commits once; an independently restarted child process retains the observer count and deduplication record; identical signed retry does not commit twice | Local child-process integration fixture with atomic disk-state replacement, lost-dedupe negative fixture, no-op restart negative fixture |
 | Abrupt local receiver exit after persisting a signed event (programmatic opt-in) | First delivery commits then terminates without HTTP acknowledgement; recovered receiver preserves count and dedupe record; identical retry has no second observed effect | Real child exit code 47, fresh process, and deliberately broken durable count/dedupe fixtures |
@@ -82,6 +83,20 @@ states after each step. An absent adapter or missing state observation fails
 the check; it never claims generic receivers support these synthetic events.
 Two local broken fixtures show why a 409 must neither apply the premature
 transition nor mark the rejected message ID as already processed.
+Enable `"versionedOutOfOrderUpdates": true` for an independent **monotonic
+resource-version** contract. A local-only adapter must recognize three
+separately signed `test.resource.versioned` events with the same `data.id`
+and integer versions 1, 3, then 2. Accept 1 and 3 with `successStatus`, then
+reject delayed 2 with HTTP **409**, leaving both `processedCount` and the
+reported `resourceVersion` unchanged at 3. The observer must include a
+non-negative integer `resourceVersion` in `GET /state?resourceId=<id>`;
+missing instrumentation fails the scenario. A correct receiver is permitted
+to skip intermediate version numbers and must not treat the late event as an
+already-seen ID. Two negative fixtures apply the stale version outright or
+reject it only after recording an additional effect. Boolean options are
+validated before any network activity. The scenario is independent of
+creation/activation order and does not guarantee external exactly-once
+effects or third-party provider version semantics.
 Add `"secretRotation": true` for a separate signing-key acceptance contract.
 Set `WFL_SECRET`, `WFL_PREVIOUS_SECRET` and `WFL_RETIRED_SECRET` to three
 distinct **synthetic** `whsec_` keys; do not place raw keys in configuration or

@@ -82,6 +82,27 @@ Add `"outOfOrderStateTransitions": true` to local `lab.json` to test an explicit
 
 The local observer must support `GET /state?resourceId=<id>` and respond with `{ "processedCount": 3, "resourceState": "activated" }` (example values); valid resource states are `missing`, `created` and `activated`. If the observer does not report a state or the receiver lacks this contract adapter, the scenario fails rather than silently passing. A broken receiver that applies activation before creation, or incorrectly marks a rejected activation as already seen, is detected by the negative fixtures in `tests/integration.test.mjs`. This opt-in scenario composes with the other checks, remains loopback-only, and is **not** proof of ordered delivery from any provider, process-restart durability, or external exactly-once effects. Do not expose the synthetic event adapter or observer publicly.
 
+### Optional versioned out-of-order update check
+
+Set `"versionedOutOfOrderUpdates": true` in local `lab.json` to verify that
+a **new, correctly signed but older resource update** cannot roll back a newer
+committed version. A development-only receiver adapter must accept synthetic
+`test.resource.versioned` events with `data.id` and positive integer
+`data.version`; `GET /state?resourceId=<id>` must report its non-negative
+integer `resourceVersion` alongside `processedCount`.
+
+The runner sends three **different authenticated event IDs** for the same
+resource, in version order **1, 3, 2**. Versions 1 and 3 must return
+`successStatus`, each committing one observed effect; delayed version 2
+must return **409 Conflict** without committing an effect or changing the
+reported resource version from 3. The local negative fixtures catch both
+accepting/applying the stale update and returning 409 **after** applying it.
+If the adapter or version observer is absent, the test fails rather than
+claiming success. It composes with the prerequisite-activation ordering test
+but is independent: no version-gapping or mandatory contiguous sequence is
+assumed. This opt-in tests the declared monotonic-version application
+contract, not real provider ordering or externally verified side effects.
+
 ### Optional signing-key rotation grace and retirement check
 
 Add `"secretRotation": true` to the local configuration and supply **three distinct, synthetic Standard Webhooks keys** as environment variables: `WFL_SECRET` (current), `WFL_PREVIOUS_SECRET` (previous key still accepted during the configured grace period), and `WFL_RETIRED_SECRET` (revoked key that must no longer be accepted). Never put these secrets in `lab.json` or Git. This check requires a local receiver configured to accept the current and previous keys but reject the retired key. All three secrets are validated before sending any HTTP requests.

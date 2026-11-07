@@ -11,6 +11,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   supportCommitted503Fault = true, unsafeForgetCommitted503Dedupe = false,
   unsafeRejectCommitted503BeforeProcess = false,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
+  supportVersionedUpdates = true, unsafeApplyStaleVersionedUpdate = false,
+  unsafeCommitStaleVersionBeforeReject = false,
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
@@ -31,6 +33,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   const lostAckIds = new Set();
   const committed503Ids = new Set();
   const resourceStates = new Map();
+  const resourceVersions = new Map();
   let processedCount = 0;
   const pendingRaces = new Map();
   let distinctBatchCommitted = false;
@@ -60,7 +63,9 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       const resourceId = url.searchParams.get('resourceId');
       res.end(JSON.stringify({ processedCount,
         ...(resourceId && supportOrderTransitions
-          ? { resourceState: resourceStates.get(resourceId) ?? 'missing' } : {}) }));
+          ? { resourceState: resourceStates.get(resourceId) ?? 'missing' } : {}),
+        ...(resourceId && supportVersionedUpdates
+          ? { resourceVersion: resourceVersions.get(resourceId) ?? 0 } : {}) }));
       return;
     }
     if (req.method !== 'POST' || url.pathname !== '/webhook') {
@@ -218,6 +223,31 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       processedCount += 1;
       seen.add(id);
       res.writeHead(200); res.end('transition accepted'); return;
+    }
+    if (supportVersionedUpdates && typeof id === 'string' && id.startsWith('wfl_version_event_')) {
+      let event;
+      try { event = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
+      const resourceId = event?.data?.id;
+      const version = event?.data?.version;
+      if (event?.type !== 'test.resource.versioned' ||
+          typeof resourceId !== 'string' || !resourceId.startsWith('wfl_version_resource_') ||
+          !Number.isSafeInteger(version) || version <= 0) {
+        res.writeHead(400); res.end(); return;
+      }
+      if (seen.has(id)) { res.writeHead(200); res.end('accepted duplicate'); return; }
+      const stale = version <= (resourceVersions.get(resourceId) ?? 0);
+      if (stale && !unsafeApplyStaleVersionedUpdate &&
+          !unsafeCommitStaleVersionBeforeReject) {
+        res.writeHead(409); res.end('stale resource version'); return;
+      }
+      if (!stale || unsafeApplyStaleVersionedUpdate || unsafeCommitStaleVersionBeforeReject) {
+        resourceVersions.set(resourceId, version);
+        processedCount += 1;
+        seen.add(id);
+      }
+      res.writeHead(stale && !unsafeApplyStaleVersionedUpdate ? 409 : 200);
+      res.end(stale ? 'stale resource version' : 'version accepted');
+      return;
     }
     if (supportRetryFault && req.headers['x-wfl-test-fault'] === 'reject-before-process-once' &&
         typeof id === 'string' && id.startsWith('wfl_retry_') && !failedRetryIds.has(id)) {
