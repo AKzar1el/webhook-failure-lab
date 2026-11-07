@@ -1409,3 +1409,100 @@ test('CLI surfaces unauthenticated collision check without exposing HMAC or synt
     await rm(directory, { recursive: true });
   }
 });
+
+test('opt-in retired-key replay rejects a previously accepted ID without another effect', async () => {
+  await withServer({ previousSecret, retiredSecret }, async (config) => {
+    const result = await runLab({ ...config, rejectRetiredKeyDuplicate: true },
+      { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const replay = result.scenarios.at(-1);
+    assert.equal(replay.scenario, 'retired_key_cached_duplicate');
+    assert.deepEqual(replay.httpStatuses, [200, 401]);
+    assert.deepEqual(replay.observedCounts, [2, 2]);
+    assert.equal(replay.expectedProcessedCount, 2);
+  });
+});
+
+test('retired-key replay catches a cache-first receiver that acknowledges revoked signatures', async () => {
+  await withServer({ previousSecret, retiredSecret, unsafeAcknowledgeRetiredDuplicate: true },
+    async (config) => {
+      const result = await runLab({ ...config, rejectRetiredKeyDuplicate: true },
+        { secret, previousSecret, retiredSecret });
+      assert.equal(result.success, false);
+      assert.ok(result.scenarios.slice(0, 4).every((item) => item.passed));
+      const replay = result.scenarios.at(-1);
+      assert.deepEqual(replay.httpStatuses, [200, 200]);
+      assert.deepEqual(replay.observedCounts, [2, 2]);
+    });
+});
+
+test('retired-key replay catches rejection after a hidden committed effect', async () => {
+  await withServer({ previousSecret, retiredSecret, unsafeCommitRetiredDuplicateBeforeReject: true },
+    async (config) => {
+      const result = await runLab({ ...config, rejectRetiredKeyDuplicate: true },
+        { secret, previousSecret, retiredSecret });
+      assert.equal(result.success, false);
+      const replay = result.scenarios.at(-1);
+      assert.deepEqual(replay.httpStatuses, [200, 401]);
+      assert.deepEqual(replay.observedCounts, [2, 3]);
+      assert.equal(replay.expectedProcessedCount, 2);
+    });
+});
+
+test('retired-key replay option validates key material and boolean before any request', async () => {
+  await withServer({ previousSecret, retiredSecret }, async (config) => {
+    for (const rejectRetiredKeyDuplicate of [0, 1, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, rejectRetiredKeyDuplicate },
+        { secret, previousSecret, retiredSecret }), /rejectRetiredKeyDuplicate/);
+    }
+    for (const keys of [
+      { previousSecret: undefined, retiredSecret },
+      { previousSecret, retiredSecret: undefined },
+      { previousSecret: secret, retiredSecret },
+      { previousSecret, retiredSecret: previousSecret },
+      { previousSecret, retiredSecret: 'whsec_invalid' },
+    ]) {
+      await assert.rejects(() => runLab({ ...config, rejectRetiredKeyDuplicate: true },
+        { secret, ...keys }), /rotation|secret|key/i);
+    }
+  });
+});
+
+test('retired-key cached replay composes with rotation and signed duplicate scenarios', async () => {
+  await withServer({ previousSecret, retiredSecret }, async (config) => {
+    const result = await runLab({ ...config, secretRotation: true,
+      rejectRetiredKeyDuplicate: true, rejectTamperedDuplicateSignature: true },
+    { secret, previousSecret, retiredSecret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    const revoked = result.scenarios.find((item) => item.scenario === 'retired_key_cached_duplicate');
+    assert.deepEqual(revoked.httpStatuses, [200, 401]);
+    assert.deepEqual(revoked.observedCounts, [3, 3]);
+    assert.equal(result.scenarios.at(-1).scenario, 'tampered_duplicate_signature');
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [4, 4]);
+  });
+});
+
+test('CLI reports retired-key replay without exposing any of three synthetic secrets', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-retired-cached-'));
+  const server = await startMock({ secret, previousSecret, retiredSecret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, rejectRetiredKeyDuplicate: true }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret, WFL_PREVIOUS_SECRET: previousSecret,
+        WFL_RETIRED_SECRET: retiredSecret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'retired_key_cached_duplicate');
+    for (const signingSecret of [secret, previousSecret, retiredSecret]) {
+      assert.ok(!stdout.includes(signingSecret));
+      assert.ok(!stdout.includes(signingSecret.slice(6)));
+    }
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});

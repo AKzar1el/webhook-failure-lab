@@ -14,6 +14,7 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
+  unsafeAcknowledgeRetiredDuplicate = false, unsafeCommitRetiredDuplicateBeforeReject = false,
   unsafeAcknowledgeStaleDuplicate = false, unsafeCommitStaleDuplicateBeforeReject = false,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
@@ -87,6 +88,15 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       // Broken receiver acknowledges known IDs before verifying the incoming HMAC.
       res.writeHead(200); res.end('accepted duplicate'); return;
     }
+    const retiredCachedDuplicate = typeof id === 'string' &&
+      id.startsWith('wfl_revokeddup_') && seen.has(id) &&
+      retiredSecret !== undefined &&
+      verify({ secret: retiredSecret, id, timestamp: ts, body,
+        signature: req.headers['webhook-signature'], now: receiverNow });
+    if (unsafeAcknowledgeRetiredDuplicate && retiredCachedDuplicate) {
+      // Broken receiver returns from its dedupe cache without checking key retirement.
+      res.writeHead(200); res.end('accepted duplicate'); return;
+    }
     const staleCachedDuplicate = typeof id === 'string' &&
       id.startsWith('wfl_staledup_') && seen.has(id) && ts < receiverNow - 300 &&
       verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'], now: ts });
@@ -115,6 +125,9 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       if (unsafeCommitTamperedDuplicateBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_dupauth_') && seen.has(id)) {
         // Broken receiver rejects the invalid HMAC only after another effect.
+        processedCount += 1;
+      }
+      if (unsafeCommitRetiredDuplicateBeforeReject && retiredCachedDuplicate) {
         processedCount += 1;
       }
       if (unsafeCommitStaleDuplicateBeforeReject && staleCachedDuplicate) {

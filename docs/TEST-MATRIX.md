@@ -28,6 +28,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID re-signed with a stale timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the past must be rejected 4xx without another effect | Local negative fixtures detect dedupe-before-freshness acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
+| Cached ID replayed with a retired signing key (opt-in) | Fresh delivery with accepted previous key commits once; same ID/body/timestamp authenticated under revoked key rejected without another effect | Local negative fixtures detect cached-ID acknowledgement before key validation and reject-after-commit, with strict three-key preflight |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -121,6 +122,19 @@ another negative fixture ignores the fault header. This is **post-rename
 process-exit recovery**, not power-loss durability, an fsync guarantee, a crash
 during a multi-write transaction, or proof of external exactly-once effects.
 Both controller and observer remain caller-supplied evidence.
+
+Enable `"rejectRetiredKeyDuplicate": true` to check that a previously
+accepted delivery ID does not bypass signing-key retirement. Supply distinct
+synthetic `WFL_SECRET`, `WFL_PREVIOUS_SECRET` and `WFL_RETIRED_SECRET` keys.
+The first event is authenticated by the still-valid previous key, accepted
+once; its **same ID, raw body and timestamp** are then signed with the revoked
+key. The second request must return a configured 4xx rejection and must not
+increment `processedCount`. The runner validates all three secrets and the
+boolean opt-in before any HTTP request. A cache-first acknowledgement and
+rejection-after-commit are exercised by deliberately broken local fixtures.
+The baseline's four scenarios are unchanged; this check composes with
+`secretRotation`, and does not establish real provider retirement timing,
+secret storage correctness, or unobserved external effects.
 
 Use `retentionWindowSeconds: 60` (integer 2-240) **only** with
 `runLab(config, { secret, advanceReceiverTime })`. A caller-owned callback
