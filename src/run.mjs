@@ -28,6 +28,12 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
        concurrentDuplicateDeliveries < 2 || concurrentDuplicateDeliveries > 8)) {
     throw new TypeError('concurrentDuplicateDeliveries must be an integer between 2 and 8');
   }
+  const concurrentDistinctDeliveries = config.concurrentDistinctDeliveries;
+  if (concurrentDistinctDeliveries !== undefined &&
+      (!Number.isInteger(concurrentDistinctDeliveries) ||
+       concurrentDistinctDeliveries < 2 || concurrentDistinctDeliveries > 8)) {
+    throw new TypeError('concurrentDistinctDeliveries must be an integer between 2 and 8');
+  }
   const retryAfterTransientFailure = config.retryAfterTransientFailure;
   if (retryAfterTransientFailure !== undefined && typeof retryAfterTransientFailure !== 'boolean') {
     throw new TypeError('retryAfterTransientFailure must be a boolean');
@@ -89,7 +95,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
-    concurrentDuplicateDeliveries, retryAfterTransientFailure, lostAckAfterCommit,
+    concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
+    retryAfterTransientFailure, lostAckAfterCommit,
     outOfOrderStateTransitions, secretRotation, conflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature,
     restartAfterCommit, crashAfterPersist,
@@ -177,6 +184,30 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
     const count = await observe();
     const expectedProcessedCount = expectedCount + 1;
     reports.push({ scenario: 'concurrent_duplicate_delivery',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        count === expectedProcessedCount,
+      httpStatuses, observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.concurrentDistinctDeliveries !== undefined) {
+    // Each independently signed event must commit, unlike concurrent copies of one ID.
+    const events = Array.from({ length: options.concurrentDistinctDeliveries }, () => {
+      const distinctId = `wfl_unique_${randomUUID().replaceAll('-', '')}`;
+      const rawBody = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(), data: { id: distinctId } });
+      return { rawBody, headers: { 'content-type': 'application/json',
+        'webhook-id': distinctId, 'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: distinctId, timestamp: now, body: rawBody }) } };
+    });
+    const responses = await Promise.all(events.map((event) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: event.headers, body: event.rawBody,
+    })));
+    const httpStatuses = responses.map((response) => response.status);
+    const count = await observe();
+    const expectedProcessedCount = expectedCount + options.concurrentDistinctDeliveries;
+    reports.push({ scenario: 'concurrent_distinct_delivery',
       passed: httpStatuses.every((status) => status === options.successStatus) &&
         count === expectedProcessedCount,
       httpStatuses, observedProcessedCount: count, expectedProcessedCount });

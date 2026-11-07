@@ -1052,3 +1052,98 @@ test('CLI exposes duplicate signature verification without leaking HMAC or secre
     await rm(directory, { recursive: true });
   }
 });
+
+test('concurrent distinct signed events each commit one observed effect', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, concurrentDistinctDeliveries: 4 }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const concurrent = result.scenarios.at(-1);
+    assert.equal(concurrent.scenario, 'concurrent_distinct_delivery');
+    assert.deepEqual(concurrent.httpStatuses, [200, 200, 200, 200]);
+    assert.equal(concurrent.expectedProcessedCount, 5);
+    assert.equal(concurrent.observedProcessedCount, 5);
+  });
+});
+
+test('concurrent distinct check catches a receiver that coalesces unrelated signed IDs', async () => {
+  await withServer({ unsafeCoalesceDistinctEvents: true }, async (config) => {
+    const result = await runLab({ ...config, concurrentDistinctDeliveries: 4 }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const concurrent = result.scenarios.at(-1);
+    assert.equal(concurrent.passed, false);
+    assert.deepEqual(concurrent.httpStatuses, [200, 200, 200, 200]);
+    assert.equal(concurrent.expectedProcessedCount, 5);
+    assert.equal(concurrent.observedProcessedCount, 2);
+  });
+});
+
+test('concurrent distinct check catches a receiver that rejects events while busy', async () => {
+  await withServer({ unsafeRejectConcurrentDistinct: true }, async (config) => {
+    const result = await runLab({ ...config, concurrentDistinctDeliveries: 4 }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((report) => report.passed));
+    const concurrent = result.scenarios.at(-1);
+    assert.equal(concurrent.passed, false);
+    assert.equal(concurrent.httpStatuses.filter((status) => status === 503).length, 3);
+    assert.equal(concurrent.observedProcessedCount, 2);
+  });
+});
+
+test('concurrent distinct count rejects unsupported values before sending any request', async () => {
+  await withServer({}, async (config) => {
+    for (const concurrentDistinctDeliveries of [0, 1, 9, 1.5, '4', true, null, []]) {
+      await assert.rejects(() => runLab({ ...config, concurrentDistinctDeliveries }, { secret }),
+        /concurrentDistinctDeliveries/);
+    }
+    const response = await fetch(config.observer);
+    assert.equal((await response.json()).processedCount, 0);
+  });
+});
+
+test('concurrent distinct check supports the minimum and maximum bounded fan-out', async () => {
+  for (const concurrentDistinctDeliveries of [2, 8]) {
+    await withServer({}, async (config) => {
+      const result = await runLab({ ...config, concurrentDistinctDeliveries }, { secret });
+      assert.equal(result.success, true);
+      const concurrent = result.scenarios.at(-1);
+      assert.equal(concurrent.httpStatuses.length, concurrentDistinctDeliveries);
+      assert.equal(concurrent.observedProcessedCount, 1 + concurrentDistinctDeliveries);
+      assert.equal(concurrent.expectedProcessedCount, 1 + concurrentDistinctDeliveries);
+    });
+  }
+});
+
+test('concurrent distinct check composes with duplicate races and transient retries', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, concurrentDuplicateDeliveries: 4,
+      concurrentDistinctDeliveries: 4, retryAfterTransientFailure: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    const distinct = result.scenarios.find((report) => report.scenario === 'concurrent_distinct_delivery');
+    assert.equal(distinct.expectedProcessedCount, 6);
+    assert.equal(distinct.observedProcessedCount, 6);
+    assert.equal(result.scenarios.at(-1).expectedProcessedCount, 7);
+  });
+});
+
+test('CLI exposes concurrent distinct delivery coverage without emitting synthetic secrets', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-distinct-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({ ...server.config, concurrentDistinctDeliveries: 4 }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'concurrent_distinct_delivery');
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});
