@@ -54,6 +54,22 @@ local receiver contract and does not prove anything about real provider
 retry policies or unobserved external side effects. The existing four default
 checks and loopback-only restrictions are unchanged.
 
+### Optional wrong media-type retry check
+
+Add `"rejectWrongContentTypeRetry": true` to require **HTTP 415** for a
+validly signed JSON body delivered with `Content-Type: text/plain`. The
+receiver must neither commit an effect nor reserve that signed event ID.
+The lab resends the **same ID, body, timestamp and HMAC** with
+`Content-Type: application/json`, then retries it identically. Both
+corrected deliveries must be acknowledged, with **one** new observed effect
+overall. This catches handlers that parse any content type, poison dedupe
+state on a 415 rejection, or report 415 after an unwanted effect. A missing
+media-type adapter fails closed. Unlike the malformed-JSON check, the raw
+body is valid JSON throughout; only the unsigned content type changes.
+Enable this opt-in contract only for a local receiver that explicitly
+requires JSON media type; some webhook providers legitimately use other
+content types. No provider behavior or unobserved business effects are proven.
+
 ### Optional tenant-scoped signed event ID isolation
 
 Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,

@@ -7,6 +7,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
   supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
   unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
+  supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
+  unsafePoisonWrongContentTypeDedupe = false,
+  unsafeCommitWrongContentTypeBeforeReject = false,
   unsafeCacheRejectedSignature = false, unsafeCommitRejectedSignature = false,
   unsafeAcceptRejectedSignature = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -239,6 +242,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         }
         res.writeHead(400); res.end('unparseable JSON'); return;
       }
+    }
+    if (supportContentTypeValidation && typeof id === 'string' &&
+        id.startsWith('wfl_media_') && req.headers['content-type'] !== 'application/json') {
+      if (unsafeAcceptWrongContentType) {
+        processedCount += 1; seen.add(id);
+        res.writeHead(200); res.end('wrong media type accepted'); return;
+      }
+      if (unsafePoisonWrongContentTypeDedupe) seen.add(id);
+      if (unsafeCommitWrongContentTypeBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(415); res.end('unsupported media type'); return;
     }
     if (tenantProbe && supportTenantScopes) {
       const priorOwner = tenantGlobalOwners.get(id);
