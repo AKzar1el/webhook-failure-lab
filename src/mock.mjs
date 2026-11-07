@@ -7,6 +7,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
   supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
   unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
+  supportEventSchemaValidation = true, unsafeAcceptInvalidEventSchema = false,
+  unsafePoisonInvalidSchemaDedupe = false, unsafeCommitInvalidSchemaBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
@@ -241,6 +243,24 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           processedCount += 1; seen.add(id);
         }
         res.writeHead(400); res.end('unparseable JSON'); return;
+      }
+    }
+    if (supportEventSchemaValidation && typeof id === 'string' &&
+        id.startsWith('wfl_schema_')) {
+      let event;
+      try { event = JSON.parse(body); } catch { event = null; }
+      const schemaValid = event?.type === 'test.created' &&
+        typeof event?.data?.id === 'string' && event.data.id === id;
+      if (!schemaValid) {
+        if (unsafeAcceptInvalidEventSchema) {
+          processedCount += 1; seen.add(id);
+          res.writeHead(200); res.end('schema-invalid delivery accepted'); return;
+        }
+        if (unsafePoisonInvalidSchemaDedupe) seen.add(id);
+        if (unsafeCommitInvalidSchemaBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(422); res.end('invalid synthetic event schema'); return;
       }
     }
     if (supportContentTypeValidation && typeof id === 'string' &&

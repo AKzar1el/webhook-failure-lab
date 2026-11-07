@@ -32,6 +32,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectWrongContentTypeRetry !== 'boolean') {
     throw new TypeError('rejectWrongContentTypeRetry must be a boolean');
   }
+  const rejectInvalidSignedEventSchema = config.rejectInvalidSignedEventSchema;
+  if (rejectInvalidSignedEventSchema !== undefined &&
+      typeof rejectInvalidSignedEventSchema !== 'boolean') {
+    throw new TypeError('rejectInvalidSignedEventSchema must be a boolean');
+  }
   const retryAfterRejectedSignature = config.retryAfterRejectedSignature;
   if (retryAfterRejectedSignature !== undefined &&
       typeof retryAfterRejectedSignature !== 'boolean') {
@@ -169,6 +174,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     rejectWrongContentTypeRetry,
+    rejectInvalidSignedEventSchema,
     retryAfterRejectedSignature,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
@@ -301,6 +307,40 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const observedCounts = [afterInvalid, afterCorrected, afterReplay];
     reports.push({ scenario: 'wrong_content_type_retry',
       passed: httpStatuses[0] === 415 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectInvalidSignedEventSchema) {
+    const schemaId = `wfl_schema_${randomUUID().replaceAll('-', '')}`;
+    const invalidBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: {} });
+    const validBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: schemaId } });
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': schemaId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: schemaId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    // Both payloads authenticate; schema rejection must not reserve the same event ID.
+    const invalid = await send(invalidBody);
+    const afterInvalid = await observe();
+    const corrected = await send(validBody);
+    const afterCorrected = await observe();
+    const replay = await send(validBody);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, corrected.status, replay.status];
+    const observedCounts = [afterInvalid, afterCorrected, afterReplay];
+    reports.push({ scenario: 'invalid_signed_event_schema_retry',
+      passed: httpStatuses[0] === 422 &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
         observedCounts[0] === expectedCount &&

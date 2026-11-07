@@ -8,6 +8,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 
 | Scenario | Expected receiver behavior | Current evidence |
 | --- | --- | --- |
+| Validly signed JSON with missing required synthetic event field, then corrected same-ID signed retry (opt-in) | Reject schema-invalid envelope with 422 before an effect or dedupe write; accept corrected event once and dedupe exact replay | Deliberately broken local receivers accept invalid envelopes, poison dedupe on rejection, or reject after recording an effect |
 | Valid signed JSON sent as text/plain, then same-ID correction to application/json (opt-in) | Reject first attempt with 415 without effect or ID reservation; accept corrected original-HMAC delivery once; identical replay dedupes | Local broken receivers catch accepting wrong media type, poisoning dedupe on rejection, and 415 after an unwanted effect |
 | Same signed event ID in two independent synthetic tenants, then wrong-key replay (opt-in) | Tenant A and B each commit once under their own signing key; a cached tenant-A ID signed by B's key is rejected without effect or 409 collision classification; exact retries dedupe within each tenant | Local negative fixtures catch globally keyed dedupe, premature collision classification, cross-tenant key acceptance, and reject-after-commit |
 | Two independently signed IDs differing only in ASCII case, then exact retries (opt-in) | Both new IDs accepted and committed once each; exact retries acknowledged without additional observed effects | Local negative fixtures lowercase the dedupe key or reject the case variant as a collision |
@@ -252,6 +253,20 @@ commit. A receiver without JSON validation fails closed; the check makes no
 assertion about a real provider's ability to correct and resend malformed
 events, or effects hidden from the provided observer. No extra protocol or
 external network dependency is needed.
+
+Enable `"rejectInvalidSignedEventSchema": true` for a separate opt-in
+**synthetic envelope validation** contract. A fresh event has valid JSON and
+correct HMAC authentication, but lacks the required `data.id` field for the
+local `test.created` adapter. The receiver must return HTTP **422** without
+recording an effect or caching the webhook ID. The runner independently signs
+a corrected event with the **same webhook ID**, a matching `data.id`, and
+valid JSON; it must commit once and then acknowledge an identical signed
+replay without a second observed effect. Negative fixtures accept invalid
+envelopes, poison the ID cache on rejection, or record an effect before 422.
+Missing local schema validation fails the scenario. This tests an explicitly
+declared local schema only: it does not imply that Standard Webhooks prescribes
+`data.id`, any universal JSON schema or provider retry behavior. The count
+is receiver-reported and cannot establish external exactly-once effects.
 
 Enable `"rejectUnauthenticatedCollision": true` to test the boundary between
 authentication and strict event-ID immutability. The harness first sends a
