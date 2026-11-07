@@ -94,6 +94,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
       typeof rejectUnauthenticatedCollision !== 'boolean') {
     throw new TypeError('rejectUnauthenticatedCollision must be a boolean');
   }
+  const rejectMalformedSignedPayload = config.rejectMalformedSignedPayload;
+  if (rejectMalformedSignedPayload !== undefined &&
+      typeof rejectMalformedSignedPayload !== 'boolean') {
+    throw new TypeError('rejectMalformedSignedPayload must be a boolean');
+  }
   const restartAfterCommit = config.restartAfterCommit;
   if (restartAfterCommit !== undefined && typeof restartAfterCommit !== 'boolean') {
     throw new TypeError('restartAfterCommit must be a boolean');
@@ -128,7 +133,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret) {
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
     rejectFutureSignedTimestamp, rejectTamperedDuplicateSignature, rejectStaleDuplicateSignature,
-    rejectUnauthenticatedCollision,
+    rejectUnauthenticatedCollision, rejectMalformedSignedPayload,
     restartAfterCommit, crashAfterPersist,
     retentionWindowSeconds };
 }
@@ -765,6 +770,35 @@ export async function runLab(config, { secret, previousSecret, retiredSecret,
         httpStatuses[1] === options.successStatus &&
         options.rejectionStatuses.includes(httpStatuses[2]) &&
         observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectMalformedSignedPayload) {
+    const malformedId = `wfl_malformed_${randomUUID().replaceAll('-', '')}`;
+    const malformedBody = '{"type":"test.created","data":';
+    const correctedBody = JSON.stringify({ type: 'test.created',
+      data: { id: malformedId } });
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': malformedId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: malformedId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    // The authenticated but unparseable delivery must not reserve its dedupe ID.
+    const invalid = await send(malformedBody);
+    const afterInvalid = await observe();
+    const corrected = await send(correctedBody);
+    const afterCorrected = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, corrected.status];
+    const observedCounts = [afterInvalid, afterCorrected];
+    reports.push({ scenario: 'malformed_signed_payload_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        httpStatuses[1] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

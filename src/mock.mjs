@@ -21,6 +21,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   unsafeFirstSignatureOnly = false, unsafeAcceptInvalidMultiSignature = false,
   unsafeCommitInvalidMultiSignatureBeforeReject = false,
+  supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
+  unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -158,6 +160,22 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         processedCount += 1; seen.add(id);
       }
       res.writeHead(401); res.end(); return;
+    }
+    if (supportMalformedValidation && typeof id === 'string' &&
+        id.startsWith('wfl_malformed_')) {
+      let parseError = false;
+      try { JSON.parse(body); } catch { parseError = true; }
+      if (parseError) {
+        if (unsafeAcceptMalformedSignedPayload) {
+          processedCount += 1; seen.add(id);
+          res.writeHead(200); res.end('unparseable payload accepted'); return;
+        }
+        if (unsafePoisonMalformedDedupe) seen.add(id);
+        if (unsafeCommitMalformedBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(400); res.end('unparseable JSON'); return;
+      }
     }
     if (typeof id === 'string' && id.startsWith('wfl_conflict_')) {
       const priorBody = seenConflictBodies.get(id);

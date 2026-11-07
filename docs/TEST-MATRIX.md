@@ -31,6 +31,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
 | Cached ID replayed with a retired signing key (opt-in) | Fresh delivery with accepted previous key commits once; same ID/body/timestamp authenticated under revoked key rejected without another effect | Local negative fixtures detect cached-ID acknowledgement before key validation and reject-after-commit, with strict three-key preflight |
 | Multiple v1 signatures in a single header (opt-in) | Valid second or first token is accepted once; separate event with two invalid tokens rejected without effect | Local negative fixtures catch first-only verification, acceptance of an invalid list and rejection after extra effect |
+| Malformed JSON with valid HMAC, then corrected same-ID signed retry (opt-in) | First delivery rejected as invalid JSON without effect or dedupe record; corrected independently signed JSON with same ID accepted and applied exactly once | Local negative receivers accept the malformed body, poison the dedupe cache on reject, or commit before returning 400 |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -270,6 +271,21 @@ effect. No clock changes, delayed requests or production keys are involved.
 This opt-in rule assumes a Standard Webhooks receiver enforcing a 300-second
 timestamp tolerance; passing establishes only the caller-reported count, not
 the absence of external effects.
+
+Enable `"rejectMalformedSignedPayload": true` to verify that authenticated
+bytes still undergo JSON syntax validation **before** any idempotency write.
+The runner sends intentionally incomplete JSON under a fresh `wfl_malformed_`
+ID, with a valid HMAC over those exact bytes, and expects a configured 4xx
+response and no observed effect. It then sends a valid JSON event with the
+**same ID and a new, valid HMAC**; that corrected delivery must succeed and
+increase `processedCount` by one. The corrected retry is intentionally a
+different authenticated payload, unlike the collision check against an ID
+that has already been **accepted**. Three negative fixtures expose accepting
+malformed data, caching a rejected event ID, and rejecting after an observed
+commit. A receiver without JSON validation fails closed; the check makes no
+assertion about a real provider's ability to correct and resend malformed
+events, or effects hidden from the provided observer. No extra protocol or
+external network dependency is needed.
 
 ## Bounded next scenarios (not implemented yet)
 
