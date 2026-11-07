@@ -34,6 +34,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
   unsafeAcknowledgeRetiredDuplicate = false, unsafeCommitRetiredDuplicateBeforeReject = false,
   unsafeAcknowledgeStaleDuplicate = false, unsafeCommitStaleDuplicateBeforeReject = false,
+  unsafeAcknowledgeFutureDuplicate = false, unsafeCommitFutureDuplicateBeforeReject = false,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
   unsafeFirstSignatureOnly = false, unsafeAcceptInvalidMultiSignature = false,
   unsafeCommitInvalidMultiSignatureBeforeReject = false,
@@ -142,6 +143,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       // Broken receiver checks its idempotency cache before enforcing freshness.
       res.writeHead(200); res.end('accepted duplicate'); return;
     }
+    const futureCachedDuplicate = typeof id === 'string' &&
+      id.startsWith('wfl_futuredup_') && seen.has(id) && ts > receiverNow + 300 &&
+      verify({ secret, id, timestamp: ts, body, signature: req.headers['webhook-signature'],
+        now: ts });
+    if (unsafeAcknowledgeFutureDuplicate && futureCachedDuplicate) {
+      // Broken receiver acknowledges a cached ID without checking future skew.
+      res.writeHead(200); res.end('accepted duplicate'); return;
+    }
     const firstOnly = unsafeFirstSignatureOnly && typeof id === 'string' &&
       id.startsWith('wfl_multisig_');
     const signature = firstOnly
@@ -217,6 +226,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1;
       }
       if (unsafeCommitStaleDuplicateBeforeReject && staleCachedDuplicate) {
+        processedCount += 1;
+      }
+      if (unsafeCommitFutureDuplicateBeforeReject && futureCachedDuplicate) {
         processedCount += 1;
       }
       if (unsafeCommitFutureBeforeReject && hasValidFutureSignature && !seen.has(id)) {
