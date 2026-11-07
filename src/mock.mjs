@@ -7,6 +7,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
   supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
   unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
+  unsafeCacheRejectedSignature = false, unsafeCommitRejectedSignature = false,
+  unsafeAcceptRejectedSignature = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -171,9 +173,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const accepted = tenantProbe && supportTenantScopes
       ? validTenantSignature || (unsafeAcceptOtherTenantKey && validWrongTenantSignature)
       : acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired) ||
+        (unsafeAcceptRejectedSignature && typeof id === 'string' &&
+          id.startsWith('wfl_authretry_')) ||
         (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (typeof id === 'string' && id.startsWith('wfl_authretry_')) {
+        if (unsafeCacheRejectedSignature) seen.add(id);
+        if (unsafeCommitRejectedSignature) {
+          processedCount += 1;
+          seen.add(id);
+        }
+      }
       if (unsafeCommitWrongTenantBeforeReject && tenantProbe && validWrongTenantSignature) {
         processedCount += 1;
       }
