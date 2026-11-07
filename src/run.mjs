@@ -32,6 +32,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectWrongContentTypeRetry !== 'boolean') {
     throw new TypeError('rejectWrongContentTypeRetry must be a boolean');
   }
+  const acceptJsonCharsetContentType = config.acceptJsonCharsetContentType;
+  if (acceptJsonCharsetContentType !== undefined &&
+      typeof acceptJsonCharsetContentType !== 'boolean') {
+    throw new TypeError('acceptJsonCharsetContentType must be a boolean');
+  }
   const rejectInvalidSignedEventSchema = config.rejectInvalidSignedEventSchema;
   if (rejectInvalidSignedEventSchema !== undefined &&
       typeof rejectInvalidSignedEventSchema !== 'boolean') {
@@ -178,7 +183,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
-    rejectWrongContentTypeRetry,
+    rejectWrongContentTypeRetry, acceptJsonCharsetContentType,
     rejectInvalidSignedEventSchema,
     retryAfterRejectedSignature,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
@@ -317,6 +322,32 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[0] === expectedCount &&
         observedCounts[1] === expectedProcessedCount &&
         observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.acceptJsonCharsetContentType) {
+    const charsetId = `wfl_charset_${randomUUID().replaceAll('-', '')}`;
+    const charsetBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: charsetId } });
+    const signature = sign({ secret, id: charsetId, timestamp: now, body: charsetBody });
+    const send = (contentType) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': contentType, 'webhook-id': charsetId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: charsetBody,
+    });
+    // Charset is an unsigned media-type parameter, not part of the event's identity.
+    const parameterized = await send('application/json; charset=utf-8');
+    const afterParameterized = await observe();
+    const plain = await send('application/json');
+    const afterPlain = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [parameterized.status, plain.status];
+    const observedCounts = [afterParameterized, afterPlain];
+    reports.push({ scenario: 'json_charset_content_type',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

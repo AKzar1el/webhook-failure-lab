@@ -70,6 +70,21 @@ Enable this opt-in contract only for a local receiver that explicitly
 requires JSON media type; some webhook providers legitimately use other
 content types. No provider behavior or unobserved business effects are proven.
 
+### Optional JSON charset media-type acceptance
+
+Add `"acceptJsonCharsetContentType": true` when your local receiver promises
+to accept JSON webhook requests with
+`Content-Type: application/json; charset=utf-8`. The lab sends one correctly
+signed JSON event with this parameter, then repeats the **same ID, body,
+timestamp and HMAC** using plain
+`application/json`. Both must be acknowledged, with only one new observed
+effect. This catches an exact-string media-type check that incorrectly returns
+415 for valid JSON, and idempotency keyed on the unsigned Content-Type header.
+It composes with `rejectWrongContentTypeRetry`, which separately requires
+rejecting `text/plain`. Two broken localhost receivers prove the differences.
+This tests only the declared local JSON contract; it does not infer provider
+Content-Type conventions or prove unobserved external effects.
+
 ### Optional tenant-scoped signed event ID isolation
 
 Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,
