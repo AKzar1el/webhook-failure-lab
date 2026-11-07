@@ -1688,3 +1688,107 @@ test('CLI reports committed HTTP 503 retry without signing material', async () =
     await rm(directory, { recursive: true });
   }
 });
+
+test('delayed creation replay after activation preserves terminal resource state and effect count', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, delayedCreationReplayAfterActivation: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 5);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.scenario, 'delayed_creation_replay_after_activation');
+    assert.deepEqual(probe.httpStatuses, [200, 200, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 3, 3]);
+    assert.deepEqual(probe.observedResourceStates, ['created', 'activated', 'activated']);
+    assert.equal(probe.expectedProcessedCount, 3);
+  });
+});
+
+test('delayed creation replay detects a duplicate that regresses an activated resource', async () => {
+  await withServer({ unsafeReapplyDelayedCreation: true }, async (config) => {
+    const result = await runLab({ ...config, delayedCreationReplayAfterActivation: true }, { secret });
+    assert.equal(result.success, false);
+    assert.ok(result.scenarios.slice(0, 4).every((item) => item.passed));
+    const probe = result.scenarios.at(-1);
+    assert.deepEqual(probe.httpStatuses, [200, 200, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 3, 4]);
+    assert.deepEqual(probe.observedResourceStates, ['created', 'activated', 'created']);
+  });
+});
+
+test('delayed creation replay detects a receiver that rejects a previously accepted creation', async () => {
+  await withServer({ unsafeRejectDelayedCreation: true }, async (config) => {
+    const result = await runLab({ ...config, delayedCreationReplayAfterActivation: true }, { secret });
+    assert.equal(result.success, false);
+    const probe = result.scenarios.at(-1);
+    assert.deepEqual(probe.httpStatuses, [200, 200, 409]);
+    assert.deepEqual(probe.observedCounts, [2, 3, 3]);
+    assert.deepEqual(probe.observedResourceStates, ['created', 'activated', 'activated']);
+  });
+});
+
+test('delayed creation replay catches hidden effects even if final state remains activated', async () => {
+  await withServer({ unsafeCountDelayedCreationReplay: true }, async (config) => {
+    const result = await runLab({ ...config, delayedCreationReplayAfterActivation: true }, { secret });
+    assert.equal(result.success, false);
+    const probe = result.scenarios.at(-1);
+    assert.deepEqual(probe.httpStatuses, [200, 200, 200]);
+    assert.deepEqual(probe.observedCounts, [2, 3, 4]);
+    assert.deepEqual(probe.observedResourceStates, ['created', 'activated', 'activated']);
+  });
+});
+
+test('delayed creation replay rejects a receiver without a local resource-state adapter', async () => {
+  await withServer({ supportOrderTransitions: false }, async (config) => {
+    const result = await runLab({ ...config, delayedCreationReplayAfterActivation: true }, { secret });
+    assert.equal(result.success, false);
+    assert.equal(result.scenarios.at(-1).scenario, 'delayed_creation_replay_after_activation');
+    assert.equal(result.scenarios.at(-1).passed, false);
+  });
+});
+
+test('delayed creation replay option rejects nonboolean values before loopback traffic', async () => {
+  await withServer({}, async (config) => {
+    for (const delayedCreationReplayAfterActivation of [0, 1, 'true', null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, delayedCreationReplayAfterActivation }, { secret }),
+        /delayedCreationReplayAfterActivation/);
+    }
+    assert.equal((await (await fetch(config.observer)).json()).processedCount, 0);
+  });
+});
+
+test('delayed creation replay composes with out-of-order and committed HTTP 503 checks', async () => {
+  await withServer({}, async (config) => {
+    const result = await runLab({ ...config, retryAfterCommittedError: true,
+      outOfOrderStateTransitions: true, delayedCreationReplayAfterActivation: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 7);
+    const probe = result.scenarios.at(-1);
+    assert.equal(probe.scenario, 'delayed_creation_replay_after_activation');
+    assert.deepEqual(probe.observedCounts, [5, 6, 6]);
+    assert.deepEqual(probe.observedResourceStates, ['created', 'activated', 'activated']);
+  });
+});
+
+test('CLI reports delayed creation replay without exposing signing material', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-delayed-creation-'));
+  const server = await startMock({ secret });
+  try {
+    const configPath = join(directory, 'lab.json');
+    await writeFile(configPath, JSON.stringify({
+      ...server.config, delayedCreationReplayAfterActivation: true,
+    }));
+    const { stdout } = await execFileAsync(process.execPath,
+      [fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url)), 'run', configPath],
+      { env: { ...process.env, WFL_SECRET: secret } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'delayed_creation_replay_after_activation');
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 200, 200]);
+    assert.ok(!stdout.includes(secret));
+    assert.ok(!stdout.includes(secret.slice(6)));
+    assert.ok(!stdout.includes('webhook-signature'));
+  } finally {
+    await server.stop();
+    await rm(directory, { recursive: true });
+  }
+});
