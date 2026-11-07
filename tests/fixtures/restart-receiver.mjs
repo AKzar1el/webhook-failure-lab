@@ -92,8 +92,15 @@ await new Promise((resolve, reject) => {
   server.listen(0, '127.0.0.1', resolve);
 });
 const base = `http://127.0.0.1:${server.address().port}`;
-process.send({ type: 'ready', config: { endpoint: `${base}/webhook`, observer: `${base}/state` },
-  receiverInstanceId });
+const startupDelayMs = Number(process.env.WFL_TEST_STARTUP_DELAY_MS ?? 0);
+if (!Number.isSafeInteger(startupDelayMs) || startupDelayMs < 0 || startupDelayMs > 9000) {
+  throw new Error('Invalid test-only receiver startup delay');
+}
+if (startupDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
+if (process.env.WFL_TEST_SUPPRESS_READY !== '1') {
+  process.send({ type: 'ready', config: { endpoint: `${base}/webhook`, observer: `${base}/state` },
+    receiverInstanceId });
+}
 process.on('message', (message) => {
   if (message?.type === 'shutdown') server.close(() => process.disconnect());
 });
