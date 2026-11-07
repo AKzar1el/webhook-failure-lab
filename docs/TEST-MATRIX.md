@@ -27,6 +27,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Correctly signed event dated one hour in the future (opt-in) | Reject 4xx without committing any new observed effect | Local negative fixtures detect accepted future timestamps and rejected events that still commit; no system clock change |
 | Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID re-signed with a stale timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the past must be rejected 4xx without another effect | Local negative fixtures detect dedupe-before-freshness acknowledgement and reject-after-commit mistakes |
+| Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
 
 Run `npm run verify` to execute unit tests, the concurrency regression tests,
 and the four default localhost smoke scenarios. Set
@@ -142,6 +143,18 @@ The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
 exactly-once delivery guarantee.
+
+Enable `"rejectUnauthenticatedCollision": true` to test the boundary between
+authentication and strict event-ID immutability. The harness first sends a
+valid signed event, then changes the raw body under the same ID while reusing
+the original HMAC. Since the changed bytes are not authenticated, the receiver
+must reject with a configured 4xx status **other than 409 Conflict** and must
+not commit another observed effect. The exclusion of 409 applies even if
+`rejectionStatuses` explicitly includes it: collision classification must
+not precede HMAC verification. Two deliberately unsafe fixtures catch
+collision-before-auth and rejection-after-commit behavior. This opt-in check
+works with the existing signed collision and tampered duplicate tests; it
+does not prove external side effects or prevent every information leak.
 
 Enable `"conflictingEventIdPayload": true` in local CLI configuration to
 exercise an explicit **strict event-ID immutability** contract. The runner
