@@ -37,6 +37,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Modified textual timestamp header with HMAC for canonical integer (opt-in) | Reject leading-zero and decimal `.0` timestamp strings without observed effects; the original signature only covers canonical timestamp bytes | Local broken receiver fixtures detect numeric normalization before HMAC verification and rejected deliveries that still commit |
 | Previously processed event ID replayed with a tampered HMAC (opt-in) | Valid initial delivery accepted once; same ID, timestamp and body with a modified signature rejected 4xx, without a second observed effect | Local negative fixtures detect dedupe-before-authentication acknowledgement and reject-after-commit mistakes |
 | Previously processed event ID re-signed with a stale timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the past must be rejected 4xx without another effect | Local negative fixtures detect dedupe-before-freshness acknowledgement and reject-after-commit mistakes |
+| Previously processed event ID re-signed with a future timestamp (opt-in) | Fresh signed event accepted once; same cached ID and raw body re-signed one hour in the future must be rejected 4xx without another effect | Local negative fixtures detect cached-ID acknowledgement before future freshness and reject-after-commit effects |
 | Previously processed event ID replayed with changed body but original HMAC (opt-in) | Original delivery accepted; altered body with reused authenticated ID and now-invalid HMAC rejected without collision 409 or another effect | Local negative fixtures detect collision-before-auth status and reject-after-commit mistakes, even if configured rejection statuses include 409 |
 | Cached ID replayed with a retired signing key (opt-in) | Fresh delivery with accepted previous key commits once; same ID/body/timestamp authenticated under revoked key rejected without another effect | Local negative fixtures detect cached-ID acknowledgement before key validation and reject-after-commit, with strict three-key preflight |
 | Multiple v1 signatures in a single header (opt-in) | Valid second or first token is accepted once; separate event with two invalid tokens rejected without effect | Local negative fixtures catch first-only verification, acceptance of an invalid list and rejection after extra effect |
@@ -368,6 +369,17 @@ effect. No clock changes, delayed requests or production keys are involved.
 This opt-in rule assumes a Standard Webhooks receiver enforcing a 300-second
 timestamp tolerance; passing establishes only the caller-reported count, not
 the absence of external effects.
+
+Enable `"rejectFutureDuplicateSignature": true` for the complementary
+**future-skewed cached-ID** check. First, a freshly signed event is accepted
+once. The runner then independently signs the identical ID and raw body
+using a timestamp 3600 seconds in the future; despite the cached ID, that
+delivery must return a configured 4xx without another observed effect.
+Deliberately broken local receivers acknowledge the cached ID before
+checking future freshness or commit an extra effect before returning 401.
+The option composes with the unseen-ID future test and stale duplicate test.
+It does not change the system clock, assume real provider redelivery policy,
+or prove unobserved external business-side-effect correctness.
 
 ### Signed webhook ID header integrity (opt-in)
 
