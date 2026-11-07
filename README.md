@@ -54,6 +54,30 @@ local receiver contract and does not prove anything about real provider
 retry policies or unobserved external side effects. The existing four default
 checks and loopback-only restrictions are unchanged.
 
+### Optional tenant-scoped signed event ID isolation
+
+Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,
+**distinct synthetic** Standard Webhooks signing key using
+`WFL_TENANT_B_SECRET` (in addition to `WFL_SECRET`). Never save either key
+in the JSON configuration. A **local development-only** receiver adapter must
+select the appropriate tenant signing key from the synthetic
+`x-wfl-test-tenant: a` or `b` header, verify the HMAC for that tenant,
+and namespace idempotency keys by tenant. Do not expose this header-based
+test adapter on production endpoints: the header is not a trusted identity.
+
+The lab sends the **same event ID** with different authenticated bodies for
+tenant A and tenant B. Both must be accepted with one additional observed
+effect each. A tenant-A event then signed using tenant B's key must be rejected
+with a configured 4xx **other than 409 Conflict**, even though tenant A's ID has already been seen,
+without an additional effect. Exact signed retries for both tenants must be
+acknowledged without another effect. A missing adapter fails the check.
+Deliberately broken receivers expose globally keyed deduplication, false
+cross-tenant collisions, exposing a cached-ID conflict before authentication,
+accepting the other tenant's key, and rejection after
+an unauthorized effect. The four default checks are unchanged. This is an
+opt-in, synthetic tenant contract; it neither authenticates real tenants nor
+proves isolation of real customer data or unobserved business-side effects.
+
 ### Optional case-sensitive signed event ID check
 
 Add `"caseSensitiveEventIds": true` to `lab.json` to verify that a receiver

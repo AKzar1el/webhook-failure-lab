@@ -8,6 +8,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 
 | Scenario | Expected receiver behavior | Current evidence |
 | --- | --- | --- |
+| Same signed event ID in two independent synthetic tenants, then wrong-key replay (opt-in) | Tenant A and B each commit once under their own signing key; a cached tenant-A ID signed by B's key is rejected without effect or 409 collision classification; exact retries dedupe within each tenant | Local negative fixtures catch globally keyed dedupe, premature collision classification, cross-tenant key acceptance, and reject-after-commit |
 | Two independently signed IDs differing only in ASCII case, then exact retries (opt-in) | Both new IDs accepted and committed once each; exact retries acknowledged without additional observed effects | Local negative fixtures lowercase the dedupe key or reject the case variant as a collision |
 | Malformed JSON with valid HMAC, then corrected same-ID signed retry (opt-in) | First delivery rejected as invalid JSON without effect or dedupe record; corrected independently signed JSON with same ID accepted and applied exactly once | Local negative receivers accept the malformed body, poison the dedupe cache on reject, or commit before returning 400 |
 | First valid signed delivery | Accept once; observer count becomes one | Local smoke |
@@ -199,6 +200,23 @@ The observer is a **caller-provided processed-event count**, not a direct
 proof of bank charges, emails sent, or database writes. It can be wrong
 or incomplete. Passing is therefore a scoped assertion, not an
 exactly-once delivery guarantee.
+
+Enable `"tenantScopedEventIds": true` to verify **per-tenant authentication
+and idempotency** for the same opaque webhook ID. Supply two distinct synthetic
+`whsec_` signing keys in `WFL_SECRET` and `WFL_TENANT_B_SECRET` (or use
+`runLab(config, { secret, tenantBSecret })`). The receiver's **local-only**
+`x-wfl-test-tenant` adapter selects the signing key for synthetic tenant
+`a` or `b` and namespaces dedupe by tenant. The runner sends one
+authenticated event per tenant with the **same ID** but distinct bodies, then
+attempts a tenant-A event signed by B's key (configured 4xx other than 409
+required even for a cached ID), followed by exact signed retries for A and B.
+Expected observed increments are `[+1,+2,+2,+2,+2]` relative to the baseline. Five negative
+fixtures expose global dedupe, false collisions, premature collision
+classification, wrong-tenant-key acceptance and reject-after-commit. Invalid
+keys, equal keys, and malformed flags fail
+before requests. This header is a synthetic test selector, not an authorized
+production tenant identity; observed counts cannot establish real tenant
+isolation, external business effects, or provider-level key scoping.
 
 Enable `"caseSensitiveEventIds": true` to test an explicit case-sensitive,
 opaque event-ID contract. Two independent event IDs differ only in their final

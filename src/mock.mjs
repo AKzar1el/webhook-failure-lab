@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { verify } from './standard.mjs';
 
-export async function startMock({ secret, previousSecret, retiredSecret,
+export async function startMock({ secret, previousSecret, retiredSecret, tenantBSecret,
   unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
   unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
@@ -19,6 +19,10 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeCaseFoldEventIds = false, unsafeRejectCaseVariantEventId = false,
+  supportTenantScopes = true, unsafeGlobalTenantDedupe = false,
+  unsafeRejectTenantCollision = false, unsafeAcceptOtherTenantKey = false,
+  unsafeCommitWrongTenantBeforeReject = false,
+  unsafeClassifyTenantCollisionBeforeAuth = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
   unsafeAcknowledgeRetiredDuplicate = false, unsafeCommitRetiredDuplicateBeforeReject = false,
@@ -37,6 +41,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
   const caseFoldedIds = new Map();
+  const tenantScopedIds = new Set();
+  const tenantGlobalOwners = new Map();
   const failedRetryIds = new Set();
   const lostAckIds = new Set();
   const committed503Ids = new Set();
@@ -85,6 +91,12 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       if (body.length > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
     }
     const id = req.headers['webhook-id'];
+    const tenantProbe = typeof id === 'string' && id.startsWith('wfl_tenant_');
+    const tenant = req.headers['x-wfl-test-tenant'];
+    if (unsafeClassifyTenantCollisionBeforeAuth && tenantProbe && tenant === 'a' &&
+        tenantScopedIds.has(`a:${id}`)) {
+      res.writeHead(409); res.end('cached tenant ID exposed before authentication'); return;
+    }
     const timestampHeader = req.headers['webhook-timestamp'];
     const ts = Number(timestampHeader);
     const receiverNow = clock();
@@ -151,10 +163,20 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const acceptedPrevious = previousSecret !== undefined && !unsafeRejectPreviousSecret &&
       verify({ secret: previousSecret, ...metadata });
     const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
-    const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired) ||
-      (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
-        id.startsWith('wfl_multisig_reject_'));
+    const tenantKey = tenant === 'a' ? secret : tenant === 'b' ? tenantBSecret : undefined;
+    const validTenantSignature = tenantKey !== undefined &&
+      verify({ secret: tenantKey, ...metadata });
+    const validWrongTenantSignature = tenant === 'a' && tenantBSecret !== undefined &&
+      verify({ secret: tenantBSecret, ...metadata });
+    const accepted = tenantProbe && supportTenantScopes
+      ? validTenantSignature || (unsafeAcceptOtherTenantKey && validWrongTenantSignature)
+      : acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired) ||
+        (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
+          id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (unsafeCommitWrongTenantBeforeReject && tenantProbe && validWrongTenantSignature) {
+        processedCount += 1;
+      }
       if (unsafeCommitTamperedIdBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_idtamper_') && id.endsWith('_altered')) {
         processedCount += 1;
@@ -206,6 +228,20 @@ export async function startMock({ secret, previousSecret, retiredSecret,
         }
         res.writeHead(400); res.end('unparseable JSON'); return;
       }
+    }
+    if (tenantProbe && supportTenantScopes) {
+      const priorOwner = tenantGlobalOwners.get(id);
+      if ((unsafeGlobalTenantDedupe || unsafeRejectTenantCollision) && priorOwner !== undefined) {
+        res.writeHead(unsafeRejectTenantCollision && priorOwner !== tenant ? 409 : 200);
+        res.end('global tenant ID collision'); return;
+      }
+      const scopedKey = `${tenant}:${id}`;
+      if (!tenantScopedIds.has(scopedKey)) {
+        tenantScopedIds.add(scopedKey);
+        tenantGlobalOwners.set(id, tenant);
+        processedCount += 1;
+      }
+      res.writeHead(200); res.end('tenant event accepted'); return;
     }
     if ((unsafeCaseFoldEventIds || unsafeRejectCaseVariantEventId) &&
         typeof id === 'string' && id.startsWith('wfl_case_')) {
