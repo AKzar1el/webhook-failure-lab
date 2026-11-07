@@ -90,8 +90,10 @@ test('malformed payload check composes with independent precommit retry', async 
       rejectMalformedSignedPayload: true }, { secret });
     assert.equal(result.success, true);
     assert.equal(result.scenarios.length, 6);
-    assert.equal(result.scenarios.at(-1).scenario, 'malformed_signed_payload_retry');
-    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 3]);
+    assert.equal(result.scenarios[4].scenario, 'malformed_signed_payload_retry');
+    assert.deepEqual(result.scenarios[4].observedCounts, [1, 2]);
+    assert.equal(result.scenarios[5].scenario, 'retry_after_transient_failure');
+    assert.equal(result.scenarios[5].observedProcessedCount, 3);
   });
 });
 
