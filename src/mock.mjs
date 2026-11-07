@@ -12,6 +12,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
+  unsafeRejectJsonCharset = false, unsafeDedupeByContentType = false,
   unsafeCacheRejectedSignature = false, unsafeCommitRejectedSignature = false,
   unsafeAcceptRejectedSignature = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -45,6 +46,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportVersionedUpdates = true, unsafeApplyStaleVersionedUpdate = false,
   unsafeCommitStaleVersionBeforeReject = false } = {}) {
   const seen = new Set();
+  const seenCharsetKeys = new Set();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
@@ -452,6 +454,23 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       res.writeHead(stale && !unsafeApplyStaleVersionedUpdate ? 409 : 200);
       res.end(stale ? 'stale resource version' : 'version accepted');
       return;
+    }
+    if (typeof id === 'string' && id.startsWith('wfl_charset_')) {
+      const contentType = req.headers['content-type'];
+      if (unsafeRejectJsonCharset && contentType === 'application/json; charset=utf-8') {
+        res.writeHead(415); res.end('JSON charset incorrectly rejected'); return;
+      }
+      if (unsafeDedupeByContentType) {
+        const badKey = `${id}:${contentType}`;
+        if (!seenCharsetKeys.has(badKey)) {
+          processedCount += 1;
+          seenCharsetKeys.add(badKey);
+        }
+      } else if (!seen.has(id)) {
+        processedCount += 1;
+        seen.add(id);
+      }
+      res.writeHead(200); res.end('accepted'); return;
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {
