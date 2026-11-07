@@ -17,6 +17,8 @@ export async function startMock({ secret, previousSecret, retiredSecret,
   unsafeAcknowledgeRetiredDuplicate = false, unsafeCommitRetiredDuplicateBeforeReject = false,
   unsafeAcknowledgeStaleDuplicate = false, unsafeCommitStaleDuplicateBeforeReject = false,
   unsafeInspectCollisionBeforeAuth = false, unsafeCommitUnauthenticatedCollision = false,
+  unsafeFirstSignatureOnly = false, unsafeAcceptInvalidMultiSignature = false,
+  unsafeCommitInvalidMultiSignatureBeforeReject = false,
   clock = () => Math.floor(Date.now() / 1000), dedupeRetentionSeconds,
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false } = {}) {
   const seen = new Set();
@@ -104,7 +106,12 @@ export async function startMock({ secret, previousSecret, retiredSecret,
       // Broken receiver checks its idempotency cache before enforcing freshness.
       res.writeHead(200); res.end('accepted duplicate'); return;
     }
-    const metadata = { id, timestamp: ts, body, signature: req.headers['webhook-signature'],
+    const firstOnly = unsafeFirstSignatureOnly && typeof id === 'string' &&
+      id.startsWith('wfl_multisig_');
+    const signature = firstOnly
+      ? String(req.headers['webhook-signature'] ?? '').split(/\s+/)[0]
+      : req.headers['webhook-signature'];
+    const metadata = { id, timestamp: ts, body, signature,
       now: receiverNow, tolerance: verifyFreshness ? 300 : Number.POSITIVE_INFINITY };
     const syntheticFuture = typeof id === 'string' && id.startsWith('wfl_future_') &&
       ts > receiverNow + 300;
@@ -117,8 +124,14 @@ export async function startMock({ secret, previousSecret, retiredSecret,
     const acceptedPrevious = previousSecret !== undefined && !unsafeRejectPreviousSecret &&
       verify({ secret: previousSecret, ...metadata });
     const signedByRetired = retiredSecret !== undefined && verify({ secret: retiredSecret, ...metadata });
-    const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired);
+    const accepted = acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired) ||
+      (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
+        id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (unsafeCommitInvalidMultiSignatureBeforeReject && typeof id === 'string' &&
+          id.startsWith('wfl_multisig_reject_')) {
+        processedCount += 1;
+      }
       if (unsafeCommitUnauthenticatedCollision && unauthenticatedCollision) {
         processedCount += 1;
       }

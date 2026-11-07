@@ -297,13 +297,31 @@ before HMAC verification (409) and rejection after committing an effect (401
 but an increased count). This is a local authentication-ordering contract,
 not proof of all unobserved effects or universal provider webhook behavior.
 
+### Opt-in multiple HMAC signatures in one header
+
+Add `"multiSignatureHeader": true` to `lab.json` to verify a Standard
+Webhooks receiver can validate a **space-separated list of v1 signatures**.
+The runner sends a fresh event with a deliberately incorrect signature first
+and the valid signature second, then an identical event with the valid token
+first. Both responses must equal `successStatus`, but only the first may
+record an observed effect. It then sends a different event with **two invalid
+signatures**, requiring a configured 4xx rejection and no effect.
+
+The negative fixtures model first-token-only verification, accepting an
+all-invalid signature list, and rejecting only after committing an effect.
+This is useful for receivers supporting multiple signatures during key
+rotation, but does not simulate real provider rotation timing or validate
+provider-specific signature schemes. The baseline four checks remain unchanged
+when omitted. Only local synthetic secrets and loopback HTTP are used; the
+observer cannot prove the absence of unobserved external effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
 - The runner never follows redirects. Network timeouts are capped at 10 seconds.
 - The observer is supplied by the application author; the runner does **not independently prove** that all external side effects were absent or that real-world exactly-once guarantees hold.
 - The Standard Webhooks HMAC v1 surface is narrow. GitHub's `X-Hub-Signature-256` and Stripe-specific signatures are **not implemented**, despite using HMAC.
-- The opt-in checks cover concurrent duplicate delivery and concurrent distinct-event processing, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state and rejection of retired-key replays with cached IDs, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, changed-body unauthenticated collision rejection, same-ID re-signed retries, future-dated signature rejection, duplicate authentication before deduplication, and timestamp freshness before cached-ID deduplication. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
+- The opt-in checks cover concurrent duplicate delivery and concurrent distinct-event processing, one injected transient-failure retry, a committed event whose HTTP acknowledgement is lost, a synthetic dependent-event state transition delivered out of order, signing-key acceptance during an explicit rotation grace/retirement state and rejection of retired-key replays with cached IDs, a controlled receiver restart, a post-persistence abrupt receiver exit, controlled synthetic-clock dedupe retention/freshness replay (the last three programmatic-only), strict signed event-ID payload conflict handling, changed-body unauthenticated collision rejection, same-ID re-signed retries, future-dated signature rejection, duplicate authentication before deduplication, timestamp freshness before cached-ID deduplication, and multiple HMACs in a single signature header. No scenario proves power-loss safety or external exactly-once effects. This MVP does not support queued retry schedules/backoff, real temporal scheduling, arbitrary provider-specific event-order contracts, or external production testing.
 - See [the worker charter](docs/REVENUE_SHOT.md) for bounded autonomous development instructions.
 
 ## Product direction

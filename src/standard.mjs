@@ -33,7 +33,11 @@ export function verify({ secret, id, timestamp, body, signature, now = Math.floo
   } catch {
     return false;
   }
-  const actual = Buffer.from(signature, 'utf8');
   const trusted = Buffer.from(expected, 'utf8');
-  return actual.length === trusted.length && timingSafeEqual(actual, trusted);
+  // A Standard Webhooks header can carry multiple space-separated v1 signatures
+  // during signing-key rotation. Compare each candidate, not the entire header.
+  return signature.trim().split(/\s+/).some((candidate) => {
+    const actual = Buffer.from(candidate, 'utf8');
+    return actual.length === trusted.length && timingSafeEqual(actual, trusted);
+  });
 }
