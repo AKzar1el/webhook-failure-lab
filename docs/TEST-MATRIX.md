@@ -135,6 +135,13 @@ database durability, actual crash-on-write behavior, or externally observable
 exactly-once side effects. The observer and instance identifier are supplied by
 the receiver and can be inaccurate.
 
+The test fixture waits up to 10 seconds for a child readiness IPC message to
+avoid false failures under concurrent Node test-runner load (previously 4
+seconds). A synthetic child delayed by 4.25 seconds must still start and pass
+the default four loopback scenarios; a deliberately broken child that never
+sends readiness must time out with a short test-only deadline. This changes
+the local test fixture, not the public runner timeout or receiver contract.
+
 Use `crashAfterPersist: true` only with the **programmatic** `runLab(config,
 { secret, recoverReceiver })` API. The test-only receiver must recognize the
 header `x-wfl-test-fault: persist-then-crash-before-ack` on a fresh signed

@@ -23,7 +23,8 @@ async function withServer(options, fn) {
 
 function launchRestartReceiver(statePath, {
   forgetDedupe = false, crashLoseDedupe = false, crashLoseCount = false,
-  ignoreCrashFault = false,
+  ignoreCrashFault = false, startupDelayMs = 0, suppressReady = false,
+  startupTimeoutMs = 10000,
 } = {}) {
   return new Promise((resolve, reject) => {
     const child = fork(fileURLToPath(new URL('./fixtures/restart-receiver.mjs', import.meta.url)),
@@ -32,10 +33,13 @@ function launchRestartReceiver(statePath, {
           WFL_TEST_FORGET_DEDUPE: forgetDedupe ? '1' : '0',
           WFL_TEST_CRASH_LOSE_DEDUPE: crashLoseDedupe ? '1' : '0',
           WFL_TEST_CRASH_LOSE_COUNT: crashLoseCount ? '1' : '0',
-          WFL_TEST_IGNORE_CRASH: ignoreCrashFault ? '1' : '0' } });
+          WFL_TEST_IGNORE_CRASH: ignoreCrashFault ? '1' : '0',
+          WFL_TEST_STARTUP_DELAY_MS: String(startupDelayMs),
+          WFL_TEST_SUPPRESS_READY: suppressReady ? '1' : '0' } });
     let stderr = '';
     child.stderr.on('data', (chunk) => { stderr += chunk.toString().slice(0, 1000); });
-    const timer = setTimeout(() => finish(new Error('Local receiver startup timed out')), 4000);
+    const timer = setTimeout(() => finish(new Error('Local receiver startup timed out')),
+      startupTimeoutMs);
     const onExit = (code) => finish(new Error(`Local receiver exited ${code}: ${stderr}`));
     const onError = (error) => finish(error);
     const onReady = (message) => {
@@ -128,6 +132,35 @@ async function withCrashReceiver({
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+test('receiver startup tolerates a slow but healthy local child', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-slow-start-'));
+  let live;
+  try {
+    const started = Date.now();
+    live = await launchRestartReceiver(join(directory, 'durable.json'), { startupDelayMs: 4250 });
+    assert.ok(Date.now() - started >= 4000, 'fixture must actually delay readiness');
+    const result = await runLab(live.config, { secret });
+    assert.equal(result.success, true);
+  } finally {
+    if (live) await stopRestartReceiver(live.child);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('receiver startup fails closed when a broken local child never signals ready', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-no-ready-'));
+  try {
+    await assert.rejects(
+      () => launchRestartReceiver(join(directory, 'durable.json'), {
+        suppressReady: true, startupTimeoutMs: 300,
+      }),
+      /Local receiver startup timed out/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('four scenarios pass with secure idempotent receiver', async () => {
   await withServer({}, async (config) => {
