@@ -464,6 +464,23 @@ ID during HMAC verification or commit an effect before rejecting the forged
 header. This is opt-in and uses synthetic secrets and loopback requests only;
 it cannot establish the absence of unobserved external side effects.
 
+### Opt-in retry after rejected invalid signature
+
+Set `"retryAfterRejectedSignature": true` in local `lab.json`. The lab sends
+an event with a deliberately corrupted HMAC digest, then retries the **same
+event ID, timestamp and JSON body** with its authentic signature, followed by
+an identical valid replay. A compliant receiver rejects the first attempt
+without an observed effect or deduplication record, accepts and processes the
+corrected delivery once, and acknowledges the replay without processing it
+again. Expected responses are a configured 4xx, then `successStatus` twice.
+
+Broken loopback fixtures detect caching the rejected event ID, committing
+before returning 401, and accepting the invalid first signature. This is
+distinct from testing a tampered **already-processed** duplicate: it verifies
+recovery after an **unauthenticated first delivery**. No external endpoints,
+production keys or real retry scheduling are used. Receiver-reported counts
+do not establish unobserved business-side-effect guarantees.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.

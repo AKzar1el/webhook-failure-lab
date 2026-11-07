@@ -27,6 +27,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectMalformedSignedPayload !== 'boolean') {
     throw new TypeError('rejectMalformedSignedPayload must be a boolean');
   }
+  const retryAfterRejectedSignature = config.retryAfterRejectedSignature;
+  if (retryAfterRejectedSignature !== undefined &&
+      typeof retryAfterRejectedSignature !== 'boolean') {
+    throw new TypeError('retryAfterRejectedSignature must be a boolean');
+  }
   const caseSensitiveEventIds = config.caseSensitiveEventIds;
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
@@ -158,6 +163,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
+    retryAfterRejectedSignature,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
@@ -262,6 +268,40 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         httpStatuses[1] === options.successStatus &&
         observedCounts[0] === expectedCount &&
         observedCounts[1] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.retryAfterRejectedSignature) {
+    const retryId = `wfl_authretry_${randomUUID().replaceAll('-', '')}`;
+    const retryBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: retryId } });
+    const validSignature = sign({ secret, id: retryId, timestamp: now, body: retryBody });
+    const invalidSignature = validSignature.slice(0, 3) +
+      (validSignature[3] === 'A' ? 'B' : 'A') + validSignature.slice(4);
+    const send = (signature) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': retryId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: retryBody,
+    });
+    // A rejected unauthenticated delivery must not reserve its future valid retry's ID.
+    const invalid = await send(invalidSignature);
+    const afterInvalid = await observe();
+    const valid = await send(validSignature);
+    const afterValid = await observe();
+    const replay = await send(validSignature);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, valid.status, replay.status];
+    const observedCounts = [afterInvalid, afterValid, afterReplay];
+    reports.push({ scenario: 'retry_after_rejected_signature',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
