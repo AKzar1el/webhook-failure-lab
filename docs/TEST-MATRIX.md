@@ -11,6 +11,7 @@ webhooks. Use synthetic signing secrets and event payloads.
 | Validly signed JSON with missing required synthetic event field, then corrected same-ID signed retry (opt-in) | Reject schema-invalid envelope with 422 before an effect or dedupe write; accept corrected event once and dedupe exact replay | Deliberately broken local receivers accept invalid envelopes, poison dedupe on rejection, or reject after recording an effect |
 | Valid signed JSON sent as text/plain, then same-ID correction to application/json (opt-in) | Reject first attempt with 415 without effect or ID reservation; accept corrected original-HMAC delivery once; identical replay dedupes | Local broken receivers catch accepting wrong media type, poisoning dedupe on rejection, and 415 after an unwanted effect |
 | Valid signed JSON with application/json; charset=utf-8, followed by same-ID plain application/json (opt-in) | Accept both valid JSON media types with one observed effect despite an unsigned header change | Local broken receivers reject the legitimate charset parameter with 415 or dedupe by Content-Type and commit twice |
+| Signed pretty JSON and semantically identical compact JSON reusing the first HMAC (opt-in) | Accept the exact signed pretty bytes once; reject altered raw bytes without effect; accept an exact replay without another effect | Local broken receivers reserialize before verification, acknowledge cached ID before verifying altered bytes, or reject only after another effect |
 | Same signed event ID in two independent synthetic tenants, then wrong-key replay (opt-in) | Tenant A and B each commit once under their own signing key; a cached tenant-A ID signed by B's key is rejected without effect or 409 collision classification; exact retries dedupe within each tenant | Local negative fixtures catch globally keyed dedupe, premature collision classification, cross-tenant key acceptance, and reject-after-commit |
 | Two independently signed IDs differing only in ASCII case, then exact retries (opt-in) | Both new IDs accepted and committed once each; exact retries acknowledged without additional observed effects | Local negative fixtures lowercase the dedupe key or reject the case variant as a collision |
 | Malformed JSON with valid HMAC, then corrected same-ID signed retry (opt-in) | First delivery rejected as invalid JSON without effect or dedupe record; corrected independently signed JSON with same ID accepted and applied exactly once | Local negative receivers accept the malformed body, poison the dedupe cache on reject, or commit before returning 400 |
@@ -404,6 +405,20 @@ local fixtures reject the valid parameter with 415 or reprocess a duplicate
 because the media type changed. This check is independent of and composes
 with the text/plain rejection check; neither asserts universal provider media
 types or hidden business effects. Boolean config is validated before HTTP.
+
+### Exact raw JSON signature bytes (opt-in)
+
+Enable `"rawJsonSignatureBytes": true` to verify that HMAC authentication
+uses the actual request bytes rather than parsed or reserialized JSON. The lab
+signs a fresh pretty-printed JSON event including a final newline, then sends
+the same signed ID and HMAC with compact, semantically equivalent JSON. The
+receiver must accept the first delivery, reject the second with a configured
+4xx without committing an effect, and accept an exact original replay without
+another effect. The expected observer counts are `[+1,+1,+1]` relative to the
+prior count. Three local broken receivers expose canonicalized signature
+verification, cached-ID acknowledgement before authentication and
+reject-after-commit. This does not claim a provider will send pretty JSON,
+cover every encoding or certify unobserved external business effects.
 
 ## Bounded next scenarios (not implemented yet)
 

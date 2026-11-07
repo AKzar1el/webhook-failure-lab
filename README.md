@@ -85,6 +85,20 @@ rejecting `text/plain`. Two broken localhost receivers prove the differences.
 This tests only the declared local JSON contract; it does not infer provider
 Content-Type conventions or prove unobserved external effects.
 
+### Optional exact raw JSON signature bytes
+
+Add `"rawJsonSignatureBytes": true` when a local receiver uses Standard Webhooks
+HMAC verification over the **exact UTF-8 request body**, rather than reserialized
+JSON. The lab signs a valid pretty-printed JSON payload with a trailing newline,
+then sends the same event ID and HMAC with semantically identical compact JSON.
+The first delivery must commit once, the changed-byte delivery must be rejected
+with a configured 4xx and no new effect, and an exact replay must succeed without
+an extra effect. Three deliberately broken localhost receivers demonstrate
+reserializing before HMAC verification, deduplicating before authenticating the
+changed bytes, and committing an effect before rejecting a tampered delivery.
+This is opt-in and composes with JSON charset media-type checks. It does not
+promise a provider sends pretty JSON or establish unseen external effects.
+
 ### Optional tenant-scoped signed event ID isolation
 
 Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,

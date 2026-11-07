@@ -37,6 +37,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof acceptJsonCharsetContentType !== 'boolean') {
     throw new TypeError('acceptJsonCharsetContentType must be a boolean');
   }
+  const rawJsonSignatureBytes = config.rawJsonSignatureBytes;
+  if (rawJsonSignatureBytes !== undefined && typeof rawJsonSignatureBytes !== 'boolean') {
+    throw new TypeError('rawJsonSignatureBytes must be a boolean');
+  }
   const rejectInvalidSignedEventSchema = config.rejectInvalidSignedEventSchema;
   if (rejectInvalidSignedEventSchema !== undefined &&
       typeof rejectInvalidSignedEventSchema !== 'boolean') {
@@ -183,7 +187,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
-    rejectWrongContentTypeRetry, acceptJsonCharsetContentType,
+    rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema,
     retryAfterRejectedSignature,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
@@ -347,6 +351,38 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const observedCounts = [afterParameterized, afterPlain];
     reports.push({ scenario: 'json_charset_content_type',
       passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rawJsonSignatureBytes) {
+    const rawId = `wfl_rawjson_${randomUUID().replaceAll('-', '')}`;
+    const event = { type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: rawId } };
+    const prettyBody = JSON.stringify(event, null, 2) + '\n';
+    const compactBody = JSON.stringify(event);
+    const signature = sign({ secret, id: rawId, timestamp: now, body: prettyBody });
+    const send = (wireBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': rawId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: wireBody,
+    });
+    // Parsing or reserializing before HMAC verification can erase authenticated byte differences.
+    const original = await send(prettyBody);
+    const afterOriginal = await observe();
+    const modified = await send(compactBody);
+    const afterModified = await observe();
+    const replay = await send(prettyBody);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [original.status, modified.status, replay.status];
+    const observedCounts = [afterOriginal, afterModified, afterReplay];
+    reports.push({ scenario: 'raw_json_signature_bytes',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        httpStatuses[2] === options.successStatus &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
