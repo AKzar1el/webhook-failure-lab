@@ -44,6 +44,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcceptFirstDuplicateContentType = false, unsafeAcceptLastDuplicateContentType = false,
   unsafeCacheDuplicateContentType = false,
   unsafeCommitDuplicateContentTypeBeforeReject = false,
+  unsafeAcceptFirstDuplicateContentEncoding = false,
+  unsafeAcceptLastDuplicateContentEncoding = false,
+  unsafeCacheDuplicateContentEncoding = false,
+  unsafeCommitDuplicateContentEncodingBeforeReject = false,
   unsafeDecodeChunkSeparately = false, unsafeRejectChunkedTransfer = false,
   unsafeDedupeByTransferFraming = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
@@ -152,9 +156,13 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const wireTimestamps = [];
     const wireSignatures = [];
     const wireContentTypes = [];
+    const wireContentEncodings = [];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       if (req.rawHeaders[i].toLowerCase() === 'content-type') {
         wireContentTypes.push(req.rawHeaders[i + 1]);
+      }
+      if (req.rawHeaders[i].toLowerCase() === 'content-encoding') {
+        wireContentEncodings.push(req.rawHeaders[i + 1]);
       }
       if (req.rawHeaders[i].toLowerCase() === 'webhook-id') {
         wireEventIds.push(req.rawHeaders[i + 1]);
@@ -176,6 +184,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       typeof id === 'string' && id.startsWith('wfl_dupsig_');
     const duplicateWireContentType = wireContentTypes.length > 1 &&
       typeof id === 'string' && id.startsWith('wfl_dupctype_');
+    const duplicateWireContentEncoding = wireContentEncodings.length > 1 &&
+      typeof id === 'string' && id.startsWith('wfl_dupencoding_');
     let missingEventBodyId;
     if (id === undefined) {
       try {
@@ -344,6 +354,21 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         ? wireContentTypes[0] : wireContentTypes.at(-1);
       if (selected !== 'application/json') {
         res.writeHead(415); res.end('unsupported selected media type'); return;
+      }
+    }
+    if (duplicateWireContentEncoding && !unsafeAcceptFirstDuplicateContentEncoding &&
+        !unsafeAcceptLastDuplicateContentEncoding) {
+      if (unsafeCacheDuplicateContentEncoding) seen.add(id);
+      if (unsafeCommitDuplicateContentEncodingBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(400); res.end('ambiguous physical content encoding'); return;
+    }
+    if (duplicateWireContentEncoding) {
+      const selected = unsafeAcceptFirstDuplicateContentEncoding
+        ? wireContentEncodings[0] : wireContentEncodings.at(-1);
+      if (selected !== 'identity') {
+        res.writeHead(415); res.end('unsupported selected encoding'); return;
       }
     }
     if (verifySignatures && !accepted) {

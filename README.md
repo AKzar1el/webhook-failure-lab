@@ -896,6 +896,23 @@ contract**, not a universal Standard Webhooks or HTTP mandate for duplicate
 media-type handling. Only loopback traffic and synthetic HMAC material are
 used, and the observer cannot prove external business-side-effect absence.
 
+### Opt-in conflicting physical Content-Encoding rejection and retry
+
+Set `"rejectDuplicateWireContentEncodingRetry": true` to test a **strict
+single-valued encoding policy**. A valid signed JSON body is sent with two
+physical `Content-Encoding` fields (`identity` and `gzip`) in both wire orders.
+Both ambiguous requests must receive a configured 4xx, with no observed
+effect or cached event ID. Removing both fields and retrying the exact signed
+event must commit once; an identical replay must not increment the count.
+
+Four deliberately broken local receivers trust the first or last physical
+field, reserve the rejected ID, or commit before rejecting. The uncompressed
+bytes are never actually gzip-compressed, so the fixture tests header handling
+and deduplication, not decompression. This is an **opt-in local policy**, not a
+universal requirement imposed on every provider or intermediary. Only
+loopback requests and synthetic keys are used; the observer cannot certify
+unobserved external business effects.
+
 ### Opt-in invalid UTF-8 signed JSON recovery
 
 Set `"rejectInvalidUtf8Retry": true` to detect webhook receivers that
