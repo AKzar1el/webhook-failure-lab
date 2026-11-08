@@ -47,6 +47,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
   supportTimeoutFault = true, unsafeForgetTimeoutDedupe = false,
+  supportPrecommitTimeoutFault = true, unsafeReservePrecommitTimeoutDedupe = false,
+  unsafeCommitBeforePrecommitTimeout = false,
   supportCommitted503Fault = true, unsafeForgetCommitted503Dedupe = false,
   unsafeRejectCommitted503BeforeProcess = false,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
@@ -644,6 +646,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         if (!unsafeForgetTimeoutDedupe) seen.add(id);
       }
       // Intentionally leave the connection open; only the client's deadline ends the attempt.
+      return;
+    }
+    if (supportPrecommitTimeoutFault &&
+        req.headers['x-wfl-test-fault'] === 'hold-before-commit-until-timeout' &&
+        typeof id === 'string' && id.startsWith('wfl_precommit_timeout_')) {
+      // Unsafe implementations may reserve the event ID or even commit before timeout.
+      if (unsafeReservePrecommitTimeoutDedupe) seen.add(id);
+      if (unsafeCommitBeforePrecommitTimeout) {
+        processedCount += 1;
+        seen.add(id);
+      }
+      // No response and no deferred work: the client deadline aborts this request.
       return;
     }
     if (supportCommitted503Fault && req.headers['x-wfl-test-fault'] === 'commit-then-respond-503-once' &&

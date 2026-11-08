@@ -334,6 +334,25 @@ across restarts, or independently verify external effects. Only enable the
 unsigned fault-injection adapter on an isolated local test receiver; never
 expose it in production.
 
+### Optional client timeout before commit
+
+Add `"timeoutBeforeCommit": true` to test the opposite deadline boundary.
+The **local-only** adapter recognizes a fresh signed `wfl_precommit_timeout_`
+event carrying `x-wfl-test-fault: hold-before-commit-until-timeout`. It must
+hold the HTTP response until the client deadline **without committing an
+effect or permanently reserving the event ID**. The harness observes a real
+client timeout and an unchanged `processedCount`, then retries the exact signed
+delivery without the fault header. The retry must commit once; an identical
+third delivery must not add an effect.
+
+The negative fixtures detect dedupe poisoning before commit, an unwanted
+commit during the declared precommit fault, or an adapter that ignores the
+timeout. This tests a declared synthetic **cancellation-before-commit** path,
+not a claim that every real timed-out request remains uncommitted; in normal
+systems a timeout can be ambiguous. Use only an isolated local test receiver,
+never a production fault header. The observer is receiver-reported and does
+not prove external exactly-once business effects.
+
 ### Optional out-of-order dependent-event transition check
 
 Add `"outOfOrderStateTransitions": true` to local `lab.json` to test an explicit state machine, not merely a processed-count increment. Your **local development-only adapter** must recognize synthetic `test.resource.created` and `test.resource.activated` events sharing a `data.id` resource key. The harness sends a valid signed activation **before** the resource exists; the receiver must respond **409**, leave the observed count unchanged, and report resource state `missing`. It then sends the signed creation (HTTP `successStatus`, state `created`, count +1), followed by the **identical signed activation** previously rejected (HTTP `successStatus`, state `activated`, count +1).
