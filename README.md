@@ -34,6 +34,25 @@ npm run verify
 
 The four initial scenarios are: valid event (count +1), **duplicate same event ID** (no extra effect), **body tampering after signing** (reject + no effect), and **signed but expired timestamp** (reject + no effect). The CLI exits 0 only if all checks pass, 1 for assertion failures, 2 for bad input/transport errors. Output is machine-readable JSON.
 
+### CI-readable SARIF findings (opt-in output format)
+
+Use `node bin/wfl.mjs run lab.json --format sarif` to emit SARIF 2.1.0
+instead of the default JSON (or specify `--format json`). Each executed
+synthetic scenario becomes a stable `WFL_*` rule; failed receiver contracts
+become error findings with allowlisted HTTP statuses and observed counts.
+The process exit codes remain **0** for all checks passing, **1** for any
+failed receiver contract and **2** for invalid input or execution errors.
+For example, a mock receiver that accepts signed ambiguous JSON generates a
+`WFL_DUPLICATE_JSON_DATA_KEY_RETRY` finding, verified by a negative fixture.
+
+The SARIF does not include signing keys, raw payloads, target addresses, or
+arbitrary observer strings. It intentionally does **not** fabricate repository
+source-file locations for a separate webhook receiver; consumers requiring
+source-anchored code-scanning alerts must supply their own location mapping.
+The findings concern the **receiver-reported** count, not an independently
+verified exactly-once business effect. This is a local CI artifact format, not
+a deployment, workflow integration or remote upload.
+
 ### Optional signed malformed-body retry check
 
 Add `"rejectMalformedSignedPayload": true` to `lab.json` to detect a
