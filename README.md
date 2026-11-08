@@ -244,6 +244,27 @@ Add `"lostAckAfterCommit": true` to local `lab.json` to simulate an **ambiguous,
 
 The scenario fails if the adapter ignores the fault (first response succeeds) or if the receiver commits an effect but loses the matching deduplication record (replay increments the count again). Both failure modes have negative fixtures in `tests/integration.test.mjs`. It can be combined with the concurrency and transient-retry options. Omitting it retains the default four checks. The header is an intentionally unsigned local test control; implement it **only in a synthetic development harness**, never a production webhook handler. A passing result demonstrates this in-process fixture and its supplied observer, **not** durable crash/restart recovery or independently verified exactly-once business effects.
 
+### Optional client timeout after committed delivery
+
+Add `"timeoutAfterCommit": true` to `lab.json` to test a different ambiguous
+delivery: the **client gives up waiting**, rather than the receiver closing the
+connection. A local-only receiver adapter must recognize the synthetic header
+`x-wfl-test-fault: commit-then-hold-ack-until-timeout` on the first signed
+`wfl_timeout_` event. It must commit one observed effect and its dedupe record
+**before** holding the HTTP response open past the configured `timeoutMs`
+(100-10000 ms). The harness requires a real client timeout, observes the
+committed count, and retries the **identical signed event** without the test
+header. The retry must succeed without a second observed effect.
+
+The built-in loopback fixture deliberately holds the response open until the
+client aborts. Broken fixtures either forget the dedupe record and reprocess
+the retry or ignore the delay header; both fail. This probe complements the
+immediate socket drop in `lostAckAfterCommit` and the postcommit HTTP 503 test.
+It does not model a real webhook provider's timeout policy, prove durability
+across restarts, or independently verify external effects. Only enable the
+unsigned fault-injection adapter on an isolated local test receiver; never
+expose it in production.
+
 ### Optional out-of-order dependent-event transition check
 
 Add `"outOfOrderStateTransitions": true` to local `lab.json` to test an explicit state machine, not merely a processed-count increment. Your **local development-only adapter** must recognize synthetic `test.resource.created` and `test.resource.activated` events sharing a `data.id` resource key. The harness sends a valid signed activation **before** the resource exists; the receiver must respond **409**, leave the observed count unchanged, and report resource state `missing`. It then sends the signed creation (HTTP `successStatus`, state `created`, count +1), followed by the **identical signed activation** previously rejected (HTTP `successStatus`, state `activated`, count +1).

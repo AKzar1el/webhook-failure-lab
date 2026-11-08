@@ -112,6 +112,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (lostAckAfterCommit !== undefined && typeof lostAckAfterCommit !== 'boolean') {
     throw new TypeError('lostAckAfterCommit must be a boolean');
   }
+  const timeoutAfterCommit = config.timeoutAfterCommit;
+  if (timeoutAfterCommit !== undefined && typeof timeoutAfterCommit !== 'boolean') {
+    throw new TypeError('timeoutAfterCommit must be a boolean');
+  }
   const outOfOrderStateTransitions = config.outOfOrderStateTransitions;
   if (outOfOrderStateTransitions !== undefined && typeof outOfOrderStateTransitions !== 'boolean') {
     throw new TypeError('outOfOrderStateTransitions must be a boolean');
@@ -235,7 +239,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
-    retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
+    retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit, timeoutAfterCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
@@ -846,6 +850,40 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCountAfterLostAck === expectedProcessedCount &&
         retry.status === options.successStatus && count === expectedProcessedCount,
       firstAttemptOutcome, observedCountAfterLostAck, retryHttpStatus: retry.status,
+      observedProcessedCount: count, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.timeoutAfterCommit) {
+    const timeoutId = `wfl_timeout_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: timeoutId } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': timeoutId,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id: timeoutId, timestamp: now, body: rawBody }) };
+    // The test-only receiver commits before holding HTTP acknowledgement until the client aborts.
+    let firstAttemptOutcome;
+    try {
+      const first = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { ...headers, 'x-wfl-test-fault': 'commit-then-hold-ack-until-timeout' },
+        body: rawBody,
+      });
+      firstAttemptOutcome = `http_${first.status}`;
+    } catch (error) {
+      firstAttemptOutcome = error?.name === 'TimeoutError' ? 'client_timeout' : 'transport_error';
+    }
+    const observedCountAfterTimeout = await observe();
+    const retry = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const count = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    reports.push({ scenario: 'client_timeout_after_commit',
+      passed: firstAttemptOutcome === 'client_timeout' &&
+        observedCountAfterTimeout === expectedProcessedCount &&
+        retry.status === options.successStatus && count === expectedProcessedCount,
+      firstAttemptOutcome, observedCountAfterTimeout, retryHttpStatus: retry.status,
       observedProcessedCount: count, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

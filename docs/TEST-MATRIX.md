@@ -45,6 +45,7 @@ does not invent a receiver source-code location. Counts remain receiver-reported
 | First delivery rejected with injected HTTP 503, then same signed event retried (opt-in) | First attempt leaves observer unchanged; retry succeeds and increments it once | Local integration test, plus fixture that marks rejected events as processed |
 | Committed event returns HTTP 503, then identical signed delivery retried (opt-in) | First attempt returns 503 *after* one observed effect; retry succeeds with no additional effect | Local integration tests with missing dedupe key, precommit failure, and ignored fault negative fixtures |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
+| Client times out waiting for a committed signed event (opt-in) | Receiver commits once but holds HTTP acknowledgement past the client's `timeoutMs`; the harness observes a client timeout, then identical signed retry succeeds without a second effect | Synthetic localhost held-response fixture, with broken lost-dedupe and ignored-fault negative receivers |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
 | Delayed replay of resource creation after activation (opt-in) | Signed creation and activation each commit once; identical signed creation replay is acknowledged without another effect or regressing activated state | Local integration tests with rewind, reject-duplicate and hidden-effect negative fixtures |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
@@ -104,6 +105,15 @@ an HTTP response. The runner then retries the same signed event without the
 header; a second effect fails the check. An ignored fault header fails too.
 The reported transport error is not proof of a real process crash or of
 durable state across restarts. Never enable this adapter in production.
+Add `"timeoutAfterCommit": true` for a distinct client-deadline scenario using
+`x-wfl-test-fault: commit-then-hold-ack-until-timeout`. The test-only local
+receiver must commit the effect and its idempotency key before holding the
+connection open longer than `timeoutMs`. The client must observe its own
+timeout (not an early transport drop or HTTP response), verify the committed
+count, then retry the exact same signed event without the fault header. A
+lost dedupe record or ignored header fails the scenario. It is not a provider
+timeout simulation or a durable/external exactly-once guarantee, and the
+unsigned fault adapter must never be exposed in production.
 Add `"outOfOrderStateTransitions": true` for a separate dependent-event
 contract. The local receiver must recognize the synthetic types
 `test.resource.created` and `test.resource.activated` with a shared
