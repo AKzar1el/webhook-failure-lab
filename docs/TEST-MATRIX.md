@@ -4,6 +4,14 @@ This is the supported contract for the current local-first test harness.
 The CLI targets **loopback HTTP only**; it cannot send traffic to public
 webhooks. Use synthetic signing secrets and event payloads.
 
+The CLI defaults to JSON, with opt-in `--format sarif` for SARIF 2.1.0.
+Only failed receiver contracts create SARIF error findings; all executed
+scenarios appear as stable rules, and exit status remains 0 (pass), 1
+(receiver failure), or 2 (input/transport error). The signed duplicate-data-key
+broken receiver is an explicit negative fixture for a machine-readable error.
+SARIF excludes payloads, secrets, URLs, and arbitrary observer strings; it
+does not invent a receiver source-code location. Counts remain receiver-reported.
+
 ## Baseline scenarios (implemented)
 
 | Scenario | Expected receiver behavior | Current evidence |
