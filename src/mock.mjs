@@ -31,6 +31,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitMissingTimestampBeforeReject = false,
   unsafeAcceptMissingEventId = false, unsafeCacheMissingEventId = false,
   unsafeCommitMissingEventIdBeforeReject = false,
+  unsafeAcceptDuplicateWireEventId = false, unsafeCacheDuplicateWireEventId = false,
+  unsafeCommitDuplicateWireEventIdBeforeReject = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
   unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -123,7 +125,16 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     }
     const rawBody = Buffer.concat(chunks);
     const body = rawBody.toString('utf8');
-    const id = req.headers['webhook-id'];
+    const wireEventIds = [];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase() === 'webhook-id') {
+        wireEventIds.push(req.rawHeaders[i + 1]);
+      }
+    }
+    const duplicateWireId = wireEventIds.length > 1 &&
+      wireEventIds[0].startsWith('wfl_dupheader_');
+    // Explicitly use the first physical field for the broken first-wins fixture.
+    const id = duplicateWireId ? wireEventIds[0] : req.headers['webhook-id'];
     let missingEventBodyId;
     if (id === undefined) {
       try {
@@ -243,6 +254,13 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           id.startsWith('wfl_missingts_') && timestampHeader === undefined) ||
         (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_'));
+    if (duplicateWireId && !unsafeAcceptDuplicateWireEventId) {
+      if (unsafeCacheDuplicateWireEventId) seen.add(id);
+      if (unsafeCommitDuplicateWireEventIdBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(400); res.end('duplicate wire event ID'); return;
+    }
     if (verifySignatures && !accepted) {
       if (missingEventBodyId) {
         if (unsafeCacheMissingEventId) seen.add(missingEventBodyId);
