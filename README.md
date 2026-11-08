@@ -58,18 +58,19 @@ checks and loopback-only restrictions are unchanged.
 
 Add `"rejectDuplicateJsonDataKey": true` to check a **strict local JSON
 envelope policy**. The lab sends correctly HMAC-signed, syntactically valid
-JSON containing two top-level `"data"` keys with different notes. Common
-JSON parsers silently retain only the last value, obscuring which event
-data a consumer used. A strict receiver must return **422** before recording
-any observed effect or reserving the signed event ID. The lab then sends a
+JSON containing two top-level `"data"` keys with different notes, then an
+independently signed variant with its second key encoded `"d\u0061ta"`.
+JSON parsers decode that Unicode escape into the same logical name and often
+retain only the last value. A strict receiver must return **422 for both**
+before recording any observed effect or reserving the ID. The lab then sends a
 corrected, independently signed single-key body with that same ID, followed
 by an identical retry; both must succeed, with one total observed effect.
 
-Deliberately broken localhost fixtures accept the ambiguous delivery,
+Deliberately broken localhost fixtures accept either ambiguous delivery,
 poison the rejected ID, or return 422 after committing. This is an opt-in
 synthetic policy, **not** a rule imposed by Standard Webhooks, a generic
 JSON duplicate-property detector, or a provider redelivery guarantee.
-The mock recognizes this narrowly constructed fixture; a tested receiver
+The mock recognizes these narrowly constructed fixtures; a tested receiver
 must implement its own robust JSON validation. The count is caller-reported
 and cannot prove hidden business effects.
 
