@@ -811,6 +811,24 @@ Unlike the invalid-HMAC retry, this checks *absent* authentication metadata.
 This is an opt-in local adapter contract, not proof of a provider's redelivery
 policy or unseen external side effects.
 
+### Opt-in unsupported signature-version rejection
+
+Set `"rejectUnsupportedSignatureVersion": true` in local `lab.json`.
+The harness sends a fresh signed JSON event with a `webhook-signature`
+containing the correct HMAC digest but an unsupported `v2,` prefix instead
+of `v1,`. A strict Standard Webhooks v1 receiver must reject it with a
+configured 4xx **before** reserving the delivery ID or recording an effect.
+The harness then retries the same ID, timestamp and body with the correct
+`v1,` signature and replays it. Both valid requests must succeed with only
+one additional receiver-reported processing effect.
+
+Three deliberately broken localhost receivers detect checking the digest
+while ignoring its version prefix, poisoning the rejected event's dedupe
+record, and recording an effect before rejection. This opt-in contract
+tests **v1-only** verification; it does not rule out a deliberately supported
+future signature algorithm, prove a provider retry policy, or guarantee
+unobserved external business effects. No production traffic or keys are used.
+
 ### Opt-in retry after missing signed timestamp
 
 Set `"rejectMissingTimestampRetry": true` to require that a local webhook
