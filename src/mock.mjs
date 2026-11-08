@@ -9,6 +9,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
   supportEventSchemaValidation = true, unsafeAcceptInvalidEventSchema = false,
   unsafePoisonInvalidSchemaDedupe = false, unsafeCommitInvalidSchemaBeforeReject = false,
+  supportDuplicateDataValidation = true, unsafeAcceptDuplicateDataKey = false,
+  unsafePoisonDuplicateDataDedupe = false, unsafeCommitDuplicateDataBeforeReject = false,
   supportPayloadSizeValidation = true, unsafeAcceptOversizedSignedPayload = false,
   unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
@@ -360,6 +362,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           processedCount += 1; seen.add(id);
         }
         res.writeHead(422); res.end('invalid synthetic event schema'); return;
+      }
+    }
+    if (supportDuplicateDataValidation && typeof id === 'string' &&
+        id.startsWith('wfl_dupdata_')) {
+      // Only recognize this lab's deliberately ambiguous, top-level two-data-key fixture.
+      const duplicateDataKeys = /,"data"\s*:\s*\{[^{}]*\}\s*,\s*"data"\s*:/.test(body);
+      if (duplicateDataKeys && !unsafeAcceptDuplicateDataKey) {
+        if (unsafePoisonDuplicateDataDedupe) seen.add(id);
+        if (unsafeCommitDuplicateDataBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(422); res.end('duplicate synthetic data property'); return;
       }
     }
     if (supportPayloadSizeValidation && typeof id === 'string' &&

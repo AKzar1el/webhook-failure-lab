@@ -46,6 +46,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectInvalidSignedEventSchema !== 'boolean') {
     throw new TypeError('rejectInvalidSignedEventSchema must be a boolean');
   }
+  const rejectDuplicateJsonDataKey = config.rejectDuplicateJsonDataKey;
+  if (rejectDuplicateJsonDataKey !== undefined &&
+      typeof rejectDuplicateJsonDataKey !== 'boolean') {
+    throw new TypeError('rejectDuplicateJsonDataKey must be a boolean');
+  }
   const rejectOversizedSignedPayload = config.rejectOversizedSignedPayload;
   if (rejectOversizedSignedPayload !== undefined &&
       typeof rejectOversizedSignedPayload !== 'boolean') {
@@ -226,7 +231,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
-    rejectInvalidSignedEventSchema, rejectOversizedSignedPayload,
+    rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
@@ -452,6 +457,43 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const httpStatuses = [invalid.status, corrected.status, replay.status];
     const observedCounts = [afterInvalid, afterCorrected, afterReplay];
     reports.push({ scenario: 'invalid_signed_event_schema_retry',
+      passed: httpStatuses[0] === 422 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectDuplicateJsonDataKey) {
+    const eventId = `wfl_dupdata_${randomUUID().replaceAll('-', '')}`;
+    const timestamp = new Date(now * 1000).toISOString();
+    const early = JSON.stringify({ id: eventId, note: 'first' });
+    const late = JSON.stringify({ id: eventId, note: 'second' });
+    // JSON.parse accepts the last "data" key; a strict receiver must reject ambiguous bytes.
+    const ambiguousBody = '{"type":"test.created","timestamp":' +
+      JSON.stringify(timestamp) + ',"data":' + early + ',"data":' + late + '}';
+    const correctedBody = JSON.stringify({ type: 'test.created', timestamp,
+      data: { id: eventId, note: 'corrected' } });
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: eventId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    const ambiguous = await send(ambiguousBody);
+    const afterAmbiguous = await observe();
+    const corrected = await send(correctedBody);
+    const afterCorrected = await observe();
+    const replay = await send(correctedBody);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [ambiguous.status, corrected.status, replay.status];
+    const observedCounts = [afterAmbiguous, afterCorrected, afterReplay];
+    reports.push({ scenario: 'duplicate_json_data_key_retry',
       passed: httpStatuses[0] === 422 &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
