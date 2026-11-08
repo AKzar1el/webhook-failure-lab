@@ -36,6 +36,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcceptDuplicateWireTimestamp = false, unsafeAcceptLastDuplicateWireTimestamp = false,
   unsafeCacheDuplicateWireTimestamp = false,
   unsafeCommitDuplicateWireTimestampBeforeReject = false,
+  unsafeAcceptDuplicateWireSignature = false, unsafeAcceptLastDuplicateWireSignature = false,
+  unsafeCacheDuplicateWireSignature = false,
+  unsafeCommitDuplicateWireSignatureBeforeReject = false,
   unsafeDecodeChunkSeparately = false, unsafeRejectChunkedTransfer = false,
   unsafeDedupeByTransferFraming = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
@@ -136,12 +139,16 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const body = rawBody.toString('utf8');
     const wireEventIds = [];
     const wireTimestamps = [];
+    const wireSignatures = [];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       if (req.rawHeaders[i].toLowerCase() === 'webhook-id') {
         wireEventIds.push(req.rawHeaders[i + 1]);
       }
       if (req.rawHeaders[i].toLowerCase() === 'webhook-timestamp') {
         wireTimestamps.push(req.rawHeaders[i + 1]);
+      }
+      if (req.rawHeaders[i].toLowerCase() === 'webhook-signature') {
+        wireSignatures.push(req.rawHeaders[i + 1]);
       }
     }
     const duplicateWireId = wireEventIds.length > 1 &&
@@ -150,6 +157,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const id = duplicateWireId ? wireEventIds[0] : req.headers['webhook-id'];
     const duplicateWireTimestamp = wireTimestamps.length > 1 &&
       typeof id === 'string' && id.startsWith('wfl_dupts_');
+    const duplicateWireSignature = wireSignatures.length > 1 &&
+      typeof id === 'string' && id.startsWith('wfl_dupsig_');
     let missingEventBodyId;
     if (id === undefined) {
       try {
@@ -222,9 +231,12 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     }
     const firstOnly = unsafeFirstSignatureOnly && typeof id === 'string' &&
       id.startsWith('wfl_multisig_');
+    const signatureHeader = duplicateWireSignature && unsafeAcceptDuplicateWireSignature
+      ? wireSignatures[0]
+      : duplicateWireSignature && unsafeAcceptLastDuplicateWireSignature
+        ? wireSignatures.at(-1) : req.headers['webhook-signature'];
     const signature = firstOnly
-      ? String(req.headers['webhook-signature'] ?? '').split(/\s+/)[0]
-      : req.headers['webhook-signature'];
+      ? String(signatureHeader ?? '').split(/\s+/)[0] : signatureHeader;
     const noncanonicalTimestamp = typeof timestampHeader === 'string' &&
       timestampHeader !== String(ts);
     const normalizeTestTimestamp = unsafeNormalizeTimestamp && typeof id === 'string' &&
@@ -293,6 +305,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(400); res.end('duplicate wire timestamp'); return;
+    }
+    if (duplicateWireSignature && !unsafeAcceptDuplicateWireSignature &&
+        !unsafeAcceptLastDuplicateWireSignature) {
+      if (unsafeCacheDuplicateWireSignature) seen.add(id);
+      if (unsafeCommitDuplicateWireSignatureBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(400); res.end('duplicate wire signature'); return;
     }
     if (verifySignatures && !accepted) {
       if (missingEventBodyId) {

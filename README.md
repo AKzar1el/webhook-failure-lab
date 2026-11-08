@@ -806,6 +806,23 @@ policy is not guaranteed by every proxy or provider; it tests a synthetic
 local receiver, not hidden external side effects. Redirects are not followed,
 and webhook traffic remains HTTP loopback-only.
 
+### Opt-in duplicate wire signature rejection and retry
+
+Set `"rejectDuplicateWireSignatureRetry": true` for a **strict single
+physical `webhook-signature` header** contract. The lab sends a valid v1 HMAC
+and a corrupted v1 HMAC as two separate HTTP fields, in both field orders.
+The local receiver must reject both ambiguous requests with a configured 4xx,
+without an observed effect or reserved ID. A corrected single-header delivery
+of the same signed bytes must commit once, and its identical replay must dedupe.
+
+Local negative receivers that trust the first or last physical field, poison
+the rejected ID cache, or commit before rejecting are all detected. This is
+**different** from `"multiSignatureHeader": true`, which deliberately allows
+multiple space-separated signatures **inside one physical header field**.
+The strict policy is opt-in because providers and intermediaries can differ.
+Only loopback HTTP and synthetic HMAC keys are used; reported processing
+counts cannot establish external exactly-once business effects.
+
 ### Opt-in invalid UTF-8 signed JSON recovery
 
 Set `"rejectInvalidUtf8Retry": true` to detect webhook receivers that
