@@ -61,6 +61,22 @@ The findings concern the **receiver-reported** count, not an independently
 verified exactly-once business effect. This is a local CI artifact format, not
 a deployment, workflow integration or remote upload.
 
+### CI test-report XML (opt-in output format)
+
+Use `node bin/wfl.mjs run lab.json --format junit` for a local JUnit-style XML
+report that CI test-report viewers can ingest, with one testcase per executed
+synthetic scenario. Failed receiver contracts become `<failure>` testcases
+with only allowlisted HTTP statuses, counts and synthetic resource states.
+A deliberately broken localhost receiver accepting signed duplicate JSON keys
+produces a failed `duplicate_json_data_key_retry` testcase.
+
+Incomplete runs instead emit one `execution` testcase with `<error>`, no
+receiver-failure claim, and exit code 2. Exit codes 0/1/2 and the default JSON
+mode remain unchanged. XML never contains signing keys, payloads, local URLs,
+or arbitrary observer-provided strings; the exported count is still solely
+receiver-reported. The CLI does not write files or upload reports; redirect
+stdout to a local artifact file if your CI expects a path.
+
 ### Optional signed malformed-body retry check
 
 Add `"rejectMalformedSignedPayload": true` to `lab.json` to detect a

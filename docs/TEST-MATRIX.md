@@ -5,6 +5,13 @@ The CLI targets **loopback HTTP only**; it cannot send traffic to public
 webhooks. Use synthetic signing secrets and event payloads.
 
 The CLI defaults to JSON, with opt-in `--format sarif` for SARIF 2.1.0.
+Opt-in `--format junit` emits a JUnit-style XML test suite with one testcase
+per completed scenario; contract violations are failures, while invalid
+configuration or transport errors become a single execution-error testcase
+without any receiver-contract verdict. Both CI formats export only allowlisted
+observations, never payloads, keys, untrusted observer strings or target URLs.
+The deliberately broken duplicate-data-key receiver is also a real negative
+fixture for a failed XML testcase. Exit codes remain 0/1/2 in every format.
 Only failed receiver contracts create SARIF error findings; all executed
 scenarios appear as stable rules, and exit status remains 0 (pass), 1
 (receiver failure), or 2 (input/transport error). The signed duplicate-data-key

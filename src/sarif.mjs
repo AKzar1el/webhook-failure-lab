@@ -1,27 +1,9 @@
 // SARIF 2.1.0 export of completed local receiver-contract checks.
 // Emit only allowlisted numeric and synthetic-state observations; never payloads or keys.
-const evidenceFields = [
-  'httpStatus', 'httpStatuses',
-  'observedProcessedCount', 'observedCounts', 'expectedProcessedCount',
-  'observedResourceState', 'expectedResourceState',
-  'observedResourceStates', 'expectedResourceStates',
-  'observedResourceVersion', 'expectedResourceVersion',
-  'observedResourceVersions', 'expectedResourceVersions',
-];
-const syntheticStates = new Set(['missing', 'created', 'activated']);
+import { evidenceFor } from './report-evidence.mjs';
 
 function ruleId(scenario) {
   return 'WFL_' + scenario.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase();
-}
-
-function evidenceFor(report) {
-  const safeScalar = (value) => Number.isSafeInteger(value) ||
-    (typeof value === 'string' && syntheticStates.has(value));
-  const safeValue = (value) => safeScalar(value) ||
-    (Array.isArray(value) && value.length <= 16 && value.every(safeScalar));
-  return Object.fromEntries(evidenceFields
-    .filter((field) => Object.hasOwn(report, field) && safeValue(report[field]))
-    .map((field) => [field, report[field]]));
 }
 
 export function toSarif(result) {
