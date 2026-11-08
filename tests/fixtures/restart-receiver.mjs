@@ -92,7 +92,8 @@ const server = createServer(async (req, res) => {
     }
     if (!seen.has(id)) {
       if (process.env.WFL_TEST_RACY_RECOVERY === '1' &&
-          typeof id === 'string' && id.startsWith('wfl_precrash_')) {
+          typeof id === 'string' &&
+          (id.startsWith('wfl_precrash_') || id.startsWith('wfl_crash_'))) {
         // Both requests read an absent ID before either writes: a deliberate race fixture.
         await new Promise((resolve) => {
           const release = () => {
