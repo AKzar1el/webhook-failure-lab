@@ -17,6 +17,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
+  supportContentEncodingValidation = true, unsafeAcceptUnsupportedContentEncoding = false,
+  unsafePoisonUnsupportedEncodingDedupe = false,
+  unsafeCommitUnsupportedEncodingBeforeReject = false,
   unsafeRejectJsonCharset = false, unsafeDedupeByContentType = false,
   unsafeCanonicalizeRawJsonBeforeVerify = false,
   unsafeAcknowledgeRawJsonBeforeAuth = false, unsafeCommitRawJsonBeforeReject = false,
@@ -403,6 +406,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(415); res.end('unsupported media type'); return;
+    }
+    if (supportContentEncodingValidation && typeof id === 'string' &&
+        id.startsWith('wfl_encoding_') && req.headers['content-encoding'] !== undefined) {
+      if (unsafeAcceptUnsupportedContentEncoding) {
+        processedCount += 1; seen.add(id);
+        res.writeHead(200); res.end('unsupported encoding accepted'); return;
+      }
+      if (unsafePoisonUnsupportedEncodingDedupe) seen.add(id);
+      if (unsafeCommitUnsupportedEncodingBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(415); res.end('unsupported content encoding'); return;
     }
     if (tenantProbe && supportTenantScopes) {
       const priorOwner = tenantGlobalOwners.get(id);
