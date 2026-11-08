@@ -46,6 +46,29 @@ function postWithDuplicateWireTimestamp(endpoint, {
   });
 }
 
+function postWithDuplicateWireSignature(endpoint, {
+  id, timestamp, signature, body, signal, invalidFirst = false,
+}) {
+  // Preserve two physical signature fields, not a valid space-separated list
+  // inside one field (which the separate multi-signature probe accepts).
+  const invalid = signature.slice(0, 3) +
+    (signature[3] === 'A' ? 'B' : 'A') + signature.slice(4);
+  const signatures = invalidFirst ? [invalid, signature] : [signature, invalid];
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'webhook-id': id,
+        'webhook-timestamp': String(timestamp), 'webhook-signature': signatures },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode }));
+      response.once('error', reject);
+    });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
+
 function postChunkedSignedUtf8(endpoint, { id, timestamp, signature, body, signal }) {
   const utf8Start = body.indexOf(Buffer.from('€', 'utf8'));
   if (utf8Start < 0) throw new Error('Synthetic UTF-8 split marker missing');
@@ -156,6 +179,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (rejectDuplicateWireTimestampRetry !== undefined &&
       typeof rejectDuplicateWireTimestampRetry !== 'boolean') {
     throw new TypeError('rejectDuplicateWireTimestampRetry must be a boolean');
+  }
+  const rejectDuplicateWireSignatureRetry = config.rejectDuplicateWireSignatureRetry;
+  if (rejectDuplicateWireSignatureRetry !== undefined &&
+      typeof rejectDuplicateWireSignatureRetry !== 'boolean') {
+    throw new TypeError('rejectDuplicateWireSignatureRetry must be a boolean');
   }
   const chunkedSignedUtf8Replay = config.chunkedSignedUtf8Replay;
   if (chunkedSignedUtf8Replay !== undefined && typeof chunkedSignedUtf8Replay !== 'boolean') {
@@ -328,7 +356,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
-    rejectDuplicateWireTimestampRetry, chunkedSignedUtf8Replay,
+    rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry, chunkedSignedUtf8Replay,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit, timeoutAfterCommit,
@@ -826,6 +854,46 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       corrected.status, replay.status];
     const observedCounts = [afterFirst, afterLast, afterCorrected, afterReplay];
     reports.push({ scenario: 'duplicate_wire_timestamp_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectDuplicateWireSignatureRetry) {
+    const eventId = `wfl_dupsig_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const signature = sign({ secret, id: eventId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': eventId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const validFirst = await postWithDuplicateWireSignature(options.endpoint, {
+      id: eventId, timestamp: now, signature, body: rawBody, signal: timeout(),
+    });
+    const afterValidFirst = await observe();
+    const invalidFirst = await postWithDuplicateWireSignature(options.endpoint, {
+      id: eventId, timestamp: now, signature, body: rawBody,
+      signal: timeout(), invalidFirst: true,
+    });
+    const afterInvalidFirst = await observe();
+    const send = () => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const corrected = await send();
+    const afterCorrected = await observe();
+    const replay = await send();
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [validFirst.status, invalidFirst.status,
+      corrected.status, replay.status];
+    const observedCounts = [afterValidFirst, afterInvalidFirst, afterCorrected, afterReplay];
+    reports.push({ scenario: 'duplicate_wire_signature_retry',
       passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
         httpStatuses[2] === options.successStatus &&
