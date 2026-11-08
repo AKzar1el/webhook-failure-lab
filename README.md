@@ -256,6 +256,21 @@ contract assumes the provider treats webhook IDs as case-sensitive opaque
 strings; do not enable it for an integration that explicitly normalizes IDs.
 Passing proves only receiver-reported counts, not external exactly-once effects.
 
+### Optional distinct event IDs targeting one resource
+
+Add `"distinctEventsSameResource": true` to `lab.json` to catch receivers that
+confuse a webhook **delivery ID** with the `data.id` of the business resource.
+The lab independently signs a synthetic creation and update for one shared
+resource ID. Both distinct event IDs must be accepted and each increment the
+observer once; exact signed replays of both must be accepted without further
+effects. A broken receiver can incorrectly coalesce the second event,
+reject it as a conflict, or commit again on replay; all three are exercised
+by negative localhost fixtures.
+
+This is an opt-in local contract for receivers expected to act on both event
+types, not a universal provider rule or proof of external business effects.
+Omitting it leaves the four default scenarios unchanged.
+
 ### Optional concurrent duplicate race check
 
 Add `"concurrentDuplicateDeliveries": 4` to the local `lab.json` config to also send four **simultaneous, identically signed** requests using a fresh event ID. The check requires every request to return `successStatus` and the observer count to increase by **exactly one** after all requests finish. The count can be set to an integer from 2 through 8; values outside that range are rejected before any requests are sent. Omitting it retains the original four-scenario behavior.

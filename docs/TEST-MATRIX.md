@@ -37,6 +37,7 @@ does not invent a receiver source-code location. Counts remain receiver-reported
 | Same signed event ID in two independent synthetic tenants, then wrong-key replay (opt-in) | Tenant A and B each commit once under their own signing key; a cached tenant-A ID signed by B's key is rejected without effect or 409 collision classification; exact retries dedupe within each tenant | Local negative fixtures catch globally keyed dedupe, premature collision classification, cross-tenant key acceptance, and reject-after-commit |
 | Correctly signed JSON exceeding a declared 1,024-byte local size cap, then corrected same-ID signed retry (opt-in) | Return 413 without effect or ID reservation; accept a corrected smaller independently signed body once, and dedupe exact replay | Broken localhost fixtures accept oversized input, poison deduplication on rejection, or return 413 after an observed commit |
 | Two independently signed IDs differing only in ASCII case, then exact retries (opt-in) | Both new IDs accepted and committed once each; exact retries acknowledged without additional observed effects | Local negative fixtures lowercase the dedupe key or reject the case variant as a collision |
+| Two distinct signed delivery IDs for one resource ID, then exact signed retries (opt-in) | Independently accept a synthetic resource creation and update, both referring to one `data.id`; count each event once and dedupe by signed delivery ID, not by the resource ID | Broken localhost receivers silently coalesce by resource ID, return 409 for a distinct event, or reprocess exact event-ID replays |
 | Malformed JSON with valid HMAC, then corrected same-ID signed retry (opt-in) | First delivery rejected as invalid JSON without effect or dedupe record; corrected independently signed JSON with same ID accepted and applied exactly once | Local negative receivers accept the malformed body, poison the dedupe cache on reject, or commit before returning 400 |
 | Invalid HMAC on fresh event ID, followed by valid retry and identical replay (opt-in) | First signed-header tampering rejected without effect or reserved ID; identical event with correct signature commits once, and exact valid replay dedupes | Local negative fixtures catch cached IDs reserved on authentication failure, reject-after-commit effects, and accepting the invalid signature |
 | Missing HMAC header on a fresh event ID, followed by validly signed retry and replay (opt-in) | Reject unsigned first attempt 4xx without effect or ID reservation; accept corrected signature once and dedupe exact replay | Local negative fixtures accept absent signature, poison rejected dedupe, or commit before rejecting |
@@ -283,6 +284,18 @@ keys either silently drop the second event or return 409 for it; both fail.
 This rule is opt-in because provider-specific ID semantics can differ. It
 asserts only the synthetic receiver's exposed processed count, never
 unobserved business effects.
+
+Enable `"distinctEventsSameResource": true` to test a different event identity
+contract: two independently signed webhook IDs contain synthetic resource
+`created` and `updated` events with the **same** business `data.id`. Both
+fresh events must be acknowledged and produce one observed effect each; each
+exact signed retry must succeed with no additional effect. Expected observer
+increments are `[+1,+2,+2,+2]` relative to the baseline. Three deliberately
+broken localhost receivers silently dedupe by business resource ID, reject
+the second event as a 409 collision, or replay both events as new effects.
+This opt-in contract applies only where both synthetic event types are
+actionable, not to arbitrary repeated resource notifications. It does not
+verify domain state correctness or unobserved external business effects.
 
 Enable `"rejectMalformedSignedPayload": true` to verify that authenticated
 bytes still undergo JSON syntax validation **before** any idempotency write.

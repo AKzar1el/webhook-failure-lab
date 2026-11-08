@@ -142,6 +142,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
   }
+  const distinctEventsSameResource = config.distinctEventsSameResource;
+  if (distinctEventsSameResource !== undefined && typeof distinctEventsSameResource !== 'boolean') {
+    throw new TypeError('distinctEventsSameResource must be a boolean');
+  }
   const tenantScopedEventIds = config.tenantScopedEventIds;
   if (tenantScopedEventIds !== undefined && typeof tenantScopedEventIds !== 'boolean') {
     throw new TypeError('tenantScopedEventIds must be a boolean');
@@ -304,6 +308,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
+    distinctEventsSameResource,
     tenantScopedEventIds,
     rejectFutureSignedTimestamp, rejectFutureDuplicateSignature, rejectNoncanonicalTimestamp,
     rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
@@ -1501,6 +1506,40 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       passed: httpStatuses.every((status, index) => index === 2
         ? options.rejectionStatuses.includes(status) && status !== 409
         : status === options.successStatus) &&
+        observedCounts.every((count, index) => count === expectedCounts[index]),
+      httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
+  }
+
+  if (options.distinctEventsSameResource) {
+    const resourceId = `wfl_shared_resource_${randomUUID().replaceAll('-', '')}`;
+    const eventRoot = `wfl_sharedres_${randomUUID().replaceAll('-', '')}`;
+    const events = ['created', 'updated'].map((kind, index) => {
+      const eventId = `${eventRoot}_${kind}`;
+      const rawBody = JSON.stringify({ type: `test.resource.${kind}`,
+        timestamp: new Date(now * 1000).toISOString(),
+        data: { id: resourceId, sequence: index + 1 } });
+      return { eventId, rawBody,
+        signature: sign({ secret, id: eventId, timestamp: now, body: rawBody }) };
+    });
+    const httpStatuses = [];
+    const observedCounts = [];
+    for (const event of [...events, ...events]) {
+      const response = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { 'content-type': 'application/json',
+          'webhook-id': event.eventId, 'webhook-timestamp': String(now),
+          'webhook-signature': event.signature },
+        body: event.rawBody,
+      });
+      httpStatuses.push(response.status);
+      observedCounts.push(await observe());
+    }
+    // Delivery IDs, not the shared business resource ID, define idempotency here.
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'distinct_events_same_resource',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
         observedCounts.every((count, index) => count === expectedCounts[index]),
       httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
     expectedCount += 2;
