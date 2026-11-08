@@ -1,6 +1,7 @@
 // Allowlist receiver-reported observations before exporting CI artifacts.
 const evidenceFields = [
   'httpStatus', 'httpStatuses',
+  'retryAfterZero',
   'observedProcessedCount', 'observedCounts', 'expectedProcessedCount',
   'observedResourceState', 'expectedResourceState',
   'observedResourceStates', 'expectedResourceStates',
@@ -10,7 +11,7 @@ const evidenceFields = [
 const syntheticStates = new Set(['missing', 'created', 'activated']);
 
 export function evidenceFor(report) {
-  const safeScalar = (value) => Number.isSafeInteger(value) ||
+  const safeScalar = (value) => typeof value === 'boolean' || Number.isSafeInteger(value) ||
     (typeof value === 'string' && syntheticStates.has(value));
   const safeValue = (value) => safeScalar(value) ||
     (Array.isArray(value) && value.length <= 16 && value.every(safeScalar));

@@ -5,6 +5,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
   unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
+  supportRateLimitFault = true, unsafeReserveRateLimitedId = false,
+  unsafeCommitRateLimitedBeforeReject = false, unsafeOmitRateLimitRetryAfter = false,
   supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
   unsafePoisonMalformedDedupe = false, unsafeCommitMalformedBeforeReject = false,
   supportEventSchemaValidation = true, unsafeAcceptInvalidEventSchema = false,
@@ -89,6 +91,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const tenantScopedIds = new Set();
   const tenantGlobalOwners = new Map();
   const failedRetryIds = new Set();
+  const rateLimitedIds = new Set();
   const lostAckIds = new Set();
   const committed503Ids = new Set();
   const resourceStates = new Map();
@@ -626,6 +629,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       // Broken fixture marks an event as handled even though it rejected the delivery.
       if (unsafeMarkFailedRetrySeen) seen.add(id);
       res.writeHead(503); res.end('synthetic pre-processing failure'); return;
+    }
+    if (supportRateLimitFault &&
+        req.headers['x-wfl-test-fault'] === 'rate-limit-before-process-once' &&
+        typeof id === 'string' && id.startsWith('wfl_429_') && !rateLimitedIds.has(id)) {
+      rateLimitedIds.add(id);
+      if (unsafeReserveRateLimitedId) seen.add(id);
+      if (unsafeCommitRateLimitedBeforeReject) {
+        processedCount += 1;
+        seen.add(id);
+      }
+      res.writeHead(429, unsafeOmitRateLimitRetryAfter ? {} : { 'retry-after': '0' });
+      res.end('synthetic local rate limit'); return;
     }
     if (supportLostAckFault && req.headers['x-wfl-test-fault'] === 'commit-then-drop-ack-once' &&
         typeof id === 'string' && id.startsWith('wfl_lostack_') && !lostAckIds.has(id)) {
