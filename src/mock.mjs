@@ -23,6 +23,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitMissingSignatureBeforeReject = false,
   unsafeAcceptMissingTimestamp = false, unsafeCacheMissingTimestamp = false,
   unsafeCommitMissingTimestampBeforeReject = false,
+  unsafeAcceptMissingEventId = false, unsafeCacheMissingEventId = false,
+  unsafeCommitMissingEventIdBeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -109,6 +111,15 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       if (body.length > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
     }
     const id = req.headers['webhook-id'];
+    let missingEventBodyId;
+    if (id === undefined) {
+      try {
+        const bodyId = JSON.parse(body)?.data?.id;
+        if (typeof bodyId === 'string' && bodyId.startsWith('wfl_missingid_')) {
+          missingEventBodyId = bodyId;
+        }
+      } catch { /* An invalid JSON body is not an event-ID recovery fixture. */ }
+    }
     const tenantProbe = typeof id === 'string' && id.startsWith('wfl_tenant_');
     const tenant = req.headers['x-wfl-test-tenant'];
     if (unsafeClassifyTenantCollisionBeforeAuth && tenantProbe && tenant === 'a' &&
@@ -175,6 +186,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const normalizeTestTimestamp = unsafeNormalizeTimestamp && typeof id === 'string' &&
       id.startsWith('wfl_noncanonical_');
     let authenticatedId = id;
+    if (unsafeAcceptMissingEventId && missingEventBodyId) {
+      // Broken receiver trusts an unauthenticated body field as the signed wire ID.
+      authenticatedId = missingEventBodyId;
+    }
     if (unsafeVerifyBodyIdInsteadOfHeader && typeof id === 'string' &&
         id.startsWith('wfl_idtamper_') && id.endsWith('_altered')) {
       try { authenticatedId = JSON.parse(body)?.data?.id; }
@@ -216,6 +231,13 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
+      if (missingEventBodyId) {
+        if (unsafeCacheMissingEventId) seen.add(missingEventBodyId);
+        if (unsafeCommitMissingEventIdBeforeReject) {
+          processedCount += 1;
+          seen.add(missingEventBodyId);
+        }
+      }
       if (unsafeCommitRawJsonBeforeReject && rawJsonProbe && seen.has(id)) {
         processedCount += 1;
       }

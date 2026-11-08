@@ -66,6 +66,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectMissingTimestampRetry !== 'boolean') {
     throw new TypeError('rejectMissingTimestampRetry must be a boolean');
   }
+  const rejectMissingEventIdRetry = config.rejectMissingEventIdRetry;
+  if (rejectMissingEventIdRetry !== undefined &&
+      typeof rejectMissingEventIdRetry !== 'boolean') {
+    throw new TypeError('rejectMissingEventIdRetry must be a boolean');
+  }
   const caseSensitiveEventIds = config.caseSensitiveEventIds;
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
@@ -219,6 +224,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
+    rejectMissingEventIdRetry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
@@ -508,6 +514,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const httpStatuses = [missing.status, corrected.status, replay.status];
     const observedCounts = [afterMissing, afterCorrected, afterReplay];
     reports.push({ scenario: 'missing_timestamp_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectMissingEventIdRetry) {
+    const missingId = `wfl_missingid_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: missingId } });
+    const signature = sign({ secret, id: missingId, timestamp: now, body: rawBody });
+    const send = (withId) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json',
+        ...(withId ? { 'webhook-id': missingId } : {}),
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: rawBody,
+    });
+    // An unsigned body field cannot replace the authenticated event ID header.
+    const missing = await send(false);
+    const afterMissing = await observe();
+    const corrected = await send(true);
+    const afterCorrected = await observe();
+    const replay = await send(true);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [missing.status, corrected.status, replay.status];
+    const observedCounts = [afterMissing, afterCorrected, afterReplay];
+    reports.push({ scenario: 'missing_event_id_retry',
       passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
