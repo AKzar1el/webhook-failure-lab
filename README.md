@@ -133,6 +133,25 @@ Enable this opt-in contract only for a local receiver that explicitly
 requires JSON media type; some webhook providers legitimately use other
 content types. No provider behavior or unobserved business effects are proven.
 
+### Optional unsupported Content-Encoding rejection and retry
+
+Add `"rejectUnsupportedContentEncodingRetry": true` to verify a local
+receiver that **does not support compressed webhook bodies**. The lab sends
+correctly HMAC-signed, ordinary uncompressed JSON with the misleading
+`Content-Encoding: gzip` header. The receiver must return **415** without
+recording an effect or reserving the event ID. The lab then sends the exact
+same signed ID, timestamp and raw body with the unsupported header removed;
+the corrected delivery must process once, and its identical replay must
+deduplicate. The HMAC is unchanged because Content-Encoding is not signed.
+
+Broken localhost receivers demonstrate ignoring the declared encoding,
+poisoning the rejected ID's deduplication cache, or returning 415 after an
+effect. This opt-in policy is **not universal**: receivers deliberately
+supporting gzip should not enable it. The fixture intentionally sends an
+uncompressed body with a false encoding claim; it does not test decompression,
+compressed payload signing or arbitrary encodings. The observer only reports
+its own processed count, not externally guaranteed exactly-once effects.
+
 ### Optional JSON charset media-type acceptance
 
 Add `"acceptJsonCharsetContentType": true` when your local receiver promises

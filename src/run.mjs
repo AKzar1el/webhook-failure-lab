@@ -32,6 +32,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectWrongContentTypeRetry !== 'boolean') {
     throw new TypeError('rejectWrongContentTypeRetry must be a boolean');
   }
+  const rejectUnsupportedContentEncodingRetry = config.rejectUnsupportedContentEncodingRetry;
+  if (rejectUnsupportedContentEncodingRetry !== undefined &&
+      typeof rejectUnsupportedContentEncodingRetry !== 'boolean') {
+    throw new TypeError('rejectUnsupportedContentEncodingRetry must be a boolean');
+  }
   const acceptJsonCharsetContentType = config.acceptJsonCharsetContentType;
   if (acceptJsonCharsetContentType !== undefined &&
       typeof acceptJsonCharsetContentType !== 'boolean') {
@@ -234,7 +239,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
-    rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
+    rejectWrongContentTypeRetry, rejectUnsupportedContentEncodingRetry,
+    acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectInvalidUtf8Retry,
@@ -369,6 +375,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const httpStatuses = [invalid.status, corrected.status, replay.status];
     const observedCounts = [afterInvalid, afterCorrected, afterReplay];
     reports.push({ scenario: 'wrong_content_type_retry',
+      passed: httpStatuses[0] === 415 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectUnsupportedContentEncodingRetry) {
+    const encodingId = `wfl_encoding_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: encodingId } });
+    const signature = sign({ secret, id: encodingId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': encodingId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const send = (declaredEncoding) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: declaredEncoding ? { ...headers, 'content-encoding': declaredEncoding } : headers,
+      body: rawBody,
+    });
+    // The intentionally false gzip declaration is unsigned; rejecting it must not cache the ID.
+    const unsupported = await send('gzip');
+    const afterUnsupported = await observe();
+    const corrected = await send();
+    const afterCorrected = await observe();
+    const replay = await send();
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [unsupported.status, corrected.status, replay.status];
+    const observedCounts = [afterUnsupported, afterCorrected, afterReplay];
+    reports.push({ scenario: 'unsupported_content_encoding_retry',
       passed: httpStatuses[0] === 415 &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
