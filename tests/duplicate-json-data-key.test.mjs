@@ -25,8 +25,28 @@ test('signed duplicate top-level data key is rejected before a corrected same-ID
     assert.equal(result.scenarios.length, 5);
     const report = result.scenarios.at(-1);
     assert.equal(report.scenario, 'duplicate_json_data_key_retry');
-    assert.deepEqual(report.httpStatuses, [422, 200, 200]);
-    assert.deepEqual(report.observedCounts, [1, 2, 2]);
+    assert.deepEqual(report.httpStatuses, [422, 422, 200, 200]);
+    assert.deepEqual(report.observedCounts, [1, 1, 2, 2]);
+  });
+});
+
+test('escaped Unicode property name cannot hide a second signed data key', async () => {
+  await withReceiver({}, async (config) => {
+    const result = await runLab({ ...config, rejectDuplicateJsonDataKey: true }, { secret });
+    const report = result.scenarios.at(-1);
+    assert.equal(result.success, true);
+    assert.deepEqual(report.httpStatuses, [422, 422, 200, 200]);
+    assert.deepEqual(report.observedCounts, [1, 1, 2, 2]);
+  });
+});
+
+test('detects escaped-key last-value-wins acceptance by a broken receiver', async () => {
+  await withReceiver({ unsafeAcceptEscapedDuplicateDataKey: true }, async (config) => {
+    const result = await runLab({ ...config, rejectDuplicateJsonDataKey: true }, { secret });
+    const report = result.scenarios.at(-1);
+    assert.equal(result.success, false);
+    assert.deepEqual(report.httpStatuses, [422, 200, 200, 200]);
+    assert.deepEqual(report.observedCounts, [1, 2, 2, 2]);
   });
 });
 
@@ -34,7 +54,7 @@ test('detects silent last-key-wins processing of a signed ambiguous JSON payload
   await withReceiver({ unsafeAcceptDuplicateDataKey: true }, async (config) => {
     const result = await runLab({ ...config, rejectDuplicateJsonDataKey: true }, { secret });
     assert.equal(result.success, false);
-    assert.equal(result.scenarios.at(-1).httpStatuses[0], 200);
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [200, 422, 200, 200]);
   });
 });
 
@@ -42,8 +62,8 @@ test('detects a rejected ambiguous JSON body that still reserves its signed ID',
   await withReceiver({ unsafePoisonDuplicateDataDedupe: true }, async (config) => {
     const result = await runLab({ ...config, rejectDuplicateJsonDataKey: true }, { secret });
     assert.equal(result.success, false);
-    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [422, 200, 200]);
-    assert.deepEqual(result.scenarios.at(-1).observedCounts, [1, 1, 1]);
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [422, 422, 200, 200]);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [1, 1, 1, 1]);
   });
 });
 
@@ -51,8 +71,8 @@ test('detects an effect committed before rejecting a duplicate data key', async 
   await withReceiver({ unsafeCommitDuplicateDataBeforeReject: true }, async (config) => {
     const result = await runLab({ ...config, rejectDuplicateJsonDataKey: true }, { secret });
     assert.equal(result.success, false);
-    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [422, 200, 200]);
-    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 2, 2]);
+    assert.deepEqual(result.scenarios.at(-1).httpStatuses, [422, 422, 200, 200]);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [2, 3, 3, 3]);
   });
 });
 
@@ -82,7 +102,7 @@ test('duplicate-key opt-in composes with malformed signed JSON retry', async () 
       rejectMalformedSignedPayload: true }, { secret });
     assert.equal(result.success, true);
     assert.deepEqual(result.scenarios.find((s) => s.scenario === 'duplicate_json_data_key_retry')
-      .observedCounts, [2, 3, 3]);
+      .observedCounts, [2, 2, 3, 3]);
   });
 });
 
@@ -97,7 +117,7 @@ test('CLI reports a scoped duplicate-key result without leaking the HMAC secret'
       const result = JSON.parse(stdout);
       assert.equal(result.success, true);
       assert.equal(result.scenarios.at(-1).scenario, 'duplicate_json_data_key_retry');
-      assert.deepEqual(result.scenarios.at(-1).observedCounts, [1, 2, 2]);
+      assert.deepEqual(result.scenarios.at(-1).observedCounts, [1, 1, 2, 2]);
       assert.ok(!stdout.includes(secret));
       assert.ok(!stderr.includes(secret));
       assert.ok(!stdout.includes('webhook-signature'));

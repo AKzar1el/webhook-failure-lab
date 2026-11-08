@@ -10,6 +10,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportEventSchemaValidation = true, unsafeAcceptInvalidEventSchema = false,
   unsafePoisonInvalidSchemaDedupe = false, unsafeCommitInvalidSchemaBeforeReject = false,
   supportDuplicateDataValidation = true, unsafeAcceptDuplicateDataKey = false,
+  unsafeAcceptEscapedDuplicateDataKey = false,
   unsafePoisonDuplicateDataDedupe = false, unsafeCommitDuplicateDataBeforeReject = false,
   supportPayloadSizeValidation = true, unsafeAcceptOversizedSignedPayload = false,
   unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
@@ -366,9 +367,11 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     }
     if (supportDuplicateDataValidation && typeof id === 'string' &&
         id.startsWith('wfl_dupdata_')) {
-      // Only recognize this lab's deliberately ambiguous, top-level two-data-key fixture.
-      const duplicateDataKeys = /,"data"\s*:\s*\{[^{}]*\}\s*,\s*"data"\s*:/.test(body);
-      if (duplicateDataKeys && !unsafeAcceptDuplicateDataKey) {
+      // Match the two synthetic shapes, including a JSON-unescaped logical data collision.
+      const literalDuplicate = /,"data"\s*:\s*\{[^{}]*\}\s*,\s*"data"\s*:/.test(body);
+      const escapedDuplicate = /,"data"\s*:\s*\{[^{}]*\}\s*,\s*"d\\u0061ta"\s*:/.test(body);
+      if ((literalDuplicate && !unsafeAcceptDuplicateDataKey) ||
+          (escapedDuplicate && !unsafeAcceptEscapedDuplicateDataKey)) {
         if (unsafePoisonDuplicateDataDedupe) seen.add(id);
         if (unsafeCommitDuplicateDataBeforeReject) {
           processedCount += 1; seen.add(id);

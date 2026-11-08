@@ -475,6 +475,9 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     // JSON.parse accepts the last "data" key; a strict receiver must reject ambiguous bytes.
     const ambiguousBody = '{"type":"test.created","timestamp":' +
       JSON.stringify(timestamp) + ',"data":' + early + ',"data":' + late + '}';
+    // A JSON escape can spell the same logical key without repeating its raw bytes.
+    const escapedAmbiguousBody = '{"type":"test.created","timestamp":' +
+      JSON.stringify(timestamp) + ',"data":' + early + ',"d\\u0061ta":' + late + '}';
     const correctedBody = JSON.stringify({ type: 'test.created', timestamp,
       data: { id: eventId, note: 'corrected' } });
     const send = (rawBody) => request(options.endpoint, {
@@ -486,20 +489,26 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     });
     const ambiguous = await send(ambiguousBody);
     const afterAmbiguous = await observe();
+    const escapedAmbiguous = await send(escapedAmbiguousBody);
+    const afterEscapedAmbiguous = await observe();
     const corrected = await send(correctedBody);
     const afterCorrected = await observe();
     const replay = await send(correctedBody);
     const afterReplay = await observe();
     const expectedProcessedCount = expectedCount + 1;
-    const httpStatuses = [ambiguous.status, corrected.status, replay.status];
-    const observedCounts = [afterAmbiguous, afterCorrected, afterReplay];
+    const httpStatuses = [ambiguous.status, escapedAmbiguous.status,
+      corrected.status, replay.status];
+    const observedCounts = [afterAmbiguous, afterEscapedAmbiguous,
+      afterCorrected, afterReplay];
     reports.push({ scenario: 'duplicate_json_data_key_retry',
       passed: httpStatuses[0] === 422 &&
-        httpStatuses[1] === options.successStatus &&
+        httpStatuses[1] === 422 &&
         httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
         observedCounts[0] === expectedCount &&
-        observedCounts[1] === expectedProcessedCount &&
-        observedCounts[2] === expectedProcessedCount,
+        observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
