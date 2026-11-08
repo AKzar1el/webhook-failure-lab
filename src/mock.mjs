@@ -41,6 +41,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcceptDuplicateWireSignature = false, unsafeAcceptLastDuplicateWireSignature = false,
   unsafeCacheDuplicateWireSignature = false,
   unsafeCommitDuplicateWireSignatureBeforeReject = false,
+  unsafeAcceptFirstDuplicateContentType = false, unsafeAcceptLastDuplicateContentType = false,
+  unsafeCacheDuplicateContentType = false,
+  unsafeCommitDuplicateContentTypeBeforeReject = false,
   unsafeDecodeChunkSeparately = false, unsafeRejectChunkedTransfer = false,
   unsafeDedupeByTransferFraming = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
@@ -145,7 +148,11 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const wireEventIds = [];
     const wireTimestamps = [];
     const wireSignatures = [];
+    const wireContentTypes = [];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase() === 'content-type') {
+        wireContentTypes.push(req.rawHeaders[i + 1]);
+      }
       if (req.rawHeaders[i].toLowerCase() === 'webhook-id') {
         wireEventIds.push(req.rawHeaders[i + 1]);
       }
@@ -164,6 +171,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       typeof id === 'string' && id.startsWith('wfl_dupts_');
     const duplicateWireSignature = wireSignatures.length > 1 &&
       typeof id === 'string' && id.startsWith('wfl_dupsig_');
+    const duplicateWireContentType = wireContentTypes.length > 1 &&
+      typeof id === 'string' && id.startsWith('wfl_dupctype_');
     let missingEventBodyId;
     if (id === undefined) {
       try {
@@ -318,6 +327,21 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(400); res.end('duplicate wire signature'); return;
+    }
+    if (duplicateWireContentType && !unsafeAcceptFirstDuplicateContentType &&
+        !unsafeAcceptLastDuplicateContentType) {
+      if (unsafeCacheDuplicateContentType) seen.add(id);
+      if (unsafeCommitDuplicateContentTypeBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(400); res.end('ambiguous physical content type'); return;
+    }
+    if (duplicateWireContentType) {
+      const selected = unsafeAcceptFirstDuplicateContentType
+        ? wireContentTypes[0] : wireContentTypes.at(-1);
+      if (selected !== 'application/json') {
+        res.writeHead(415); res.end('unsupported selected media type'); return;
+      }
     }
     if (verifySignatures && !accepted) {
       if (missingEventBodyId) {

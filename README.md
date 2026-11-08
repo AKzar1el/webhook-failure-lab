@@ -861,6 +861,24 @@ The strict policy is opt-in because providers and intermediaries can differ.
 Only loopback HTTP and synthetic HMAC keys are used; reported processing
 counts cannot establish external exactly-once business effects.
 
+### Opt-in conflicting physical Content-Type rejection and retry
+
+Set `"rejectDuplicateWireContentTypeRetry": true` to test a receiver's
+**strict single-valued media-type policy**. The harness sends two physical
+`Content-Type` fields, one `application/json` and one `text/plain`, in
+both orders with an otherwise valid signed JSON event. Both ambiguous
+requests must receive a configured 4xx without an observed effect or a
+deduplication write. A single `application/json` header with the original
+signed body and event ID must then process once; its exact replay must dedupe.
+
+Four deliberately broken localhost receivers detect first- or last-field
+trust, rejected-ID cache poisoning, and rejection after a committed effect.
+The raw HTTP sender preserves two physical header fields; the ordinary fetch
+client cannot represent that wire shape. This is an **opt-in local receiver
+contract**, not a universal Standard Webhooks or HTTP mandate for duplicate
+media-type handling. Only loopback traffic and synthetic HMAC material are
+used, and the observer cannot prove external business-side-effect absence.
+
 ### Opt-in invalid UTF-8 signed JSON recovery
 
 Set `"rejectInvalidUtf8Retry": true` to detect webhook receivers that
