@@ -90,6 +90,27 @@ function postWithDuplicateWireContentType(endpoint, {
   });
 }
 
+function postWithDuplicateWireContentEncoding(endpoint, {
+  id, timestamp, signature, body, signal, identityFirst = true,
+}) {
+  // Preserve conflicting physical encoding fields: fetch would merge them.
+  const encodings = identityFirst ? ['identity', 'gzip'] : ['gzip', 'identity'];
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'content-encoding': encodings,
+        'webhook-id': id, 'webhook-timestamp': String(timestamp),
+        'webhook-signature': signature },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode }));
+      response.once('error', reject);
+    });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
+
 function postChunkedSignedUtf8(endpoint, { id, timestamp, signature, body, signal }) {
   const utf8Start = body.indexOf(Buffer.from('€', 'utf8'));
   if (utf8Start < 0) throw new Error('Synthetic UTF-8 split marker missing');
@@ -210,6 +231,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (rejectDuplicateWireContentTypeRetry !== undefined &&
       typeof rejectDuplicateWireContentTypeRetry !== 'boolean') {
     throw new TypeError('rejectDuplicateWireContentTypeRetry must be a boolean');
+  }
+  const rejectDuplicateWireContentEncodingRetry = config.rejectDuplicateWireContentEncodingRetry;
+  if (rejectDuplicateWireContentEncodingRetry !== undefined &&
+      typeof rejectDuplicateWireContentEncodingRetry !== 'boolean') {
+    throw new TypeError('rejectDuplicateWireContentEncodingRetry must be a boolean');
   }
   const chunkedSignedUtf8Replay = config.chunkedSignedUtf8Replay;
   if (chunkedSignedUtf8Replay !== undefined && typeof chunkedSignedUtf8Replay !== 'boolean') {
@@ -395,7 +421,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
-    rejectDuplicateWireContentTypeRetry, chunkedSignedUtf8Replay,
+    rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
+    chunkedSignedUtf8Replay,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
@@ -975,6 +1002,46 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       corrected.status, replay.status];
     const observedCounts = [afterJsonFirst, afterTextFirst, afterCorrected, afterReplay];
     reports.push({ scenario: 'duplicate_wire_content_type_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectDuplicateWireContentEncodingRetry) {
+    const eventId = `wfl_dupencoding_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const signature = sign({ secret, id: eventId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': eventId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const identityFirst = await postWithDuplicateWireContentEncoding(options.endpoint, {
+      id: eventId, timestamp: now, signature, body: rawBody, signal: timeout(),
+    });
+    const afterIdentityFirst = await observe();
+    const gzipFirst = await postWithDuplicateWireContentEncoding(options.endpoint, {
+      id: eventId, timestamp: now, signature, body: rawBody, signal: timeout(),
+      identityFirst: false,
+    });
+    const afterGzipFirst = await observe();
+    const send = () => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const corrected = await send();
+    const afterCorrected = await observe();
+    const replay = await send();
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [identityFirst.status, gzipFirst.status,
+      corrected.status, replay.status];
+    const observedCounts = [afterIdentityFirst, afterGzipFirst, afterCorrected, afterReplay];
+    reports.push({ scenario: 'duplicate_wire_content_encoding_retry',
       passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
         httpStatuses[2] === options.successStatus &&
