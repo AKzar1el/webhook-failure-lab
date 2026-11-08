@@ -33,6 +33,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
+  supportTimeoutFault = true, unsafeForgetTimeoutDedupe = false,
   supportCommitted503Fault = true, unsafeForgetCommitted503Dedupe = false,
   unsafeRejectCommitted503BeforeProcess = false,
   unsafeApplyOutOfOrder = false, unsafeMarkRejectedOrderSeen = false,
@@ -520,6 +521,16 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         if (!unsafeForgetLostAckDedupe) seen.add(id);
       }
       res.destroy();
+      return;
+    }
+    if (supportTimeoutFault &&
+        req.headers['x-wfl-test-fault'] === 'commit-then-hold-ack-until-timeout' &&
+        typeof id === 'string' && id.startsWith('wfl_timeout_')) {
+      if (!seen.has(id)) {
+        processedCount += 1;
+        if (!unsafeForgetTimeoutDedupe) seen.add(id);
+      }
+      // Intentionally leave the connection open; only the client's deadline ends the attempt.
       return;
     }
     if (supportCommitted503Fault && req.headers['x-wfl-test-fault'] === 'commit-then-respond-503-once' &&
