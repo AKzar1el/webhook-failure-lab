@@ -50,6 +50,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeCaseFoldEventIds = false, unsafeRejectCaseVariantEventId = false,
+  unsafeDedupeByResourceId = false, unsafeRejectSecondResourceEvent = false,
+  unsafeReprocessSharedResourceReplays = false,
   supportTenantScopes = true, unsafeGlobalTenantDedupe = false,
   unsafeRejectTenantCollision = false, unsafeAcceptOtherTenantKey = false,
   unsafeCommitWrongTenantBeforeReject = false,
@@ -75,6 +77,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
   const caseFoldedIds = new Map();
+  const sharedResourceFirstEvent = new Map();
   const tenantScopedIds = new Set();
   const tenantGlobalOwners = new Map();
   const failedRetryIds = new Set();
@@ -462,6 +465,29 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1;
       }
       res.writeHead(200); res.end('tenant event accepted'); return;
+    }
+    if ((unsafeDedupeByResourceId || unsafeRejectSecondResourceEvent ||
+        unsafeReprocessSharedResourceReplays) &&
+        typeof id === 'string' && id.startsWith('wfl_sharedres_')) {
+      let event;
+      try { event = JSON.parse(body); } catch { res.writeHead(400); res.end(); return; }
+      const resourceId = event?.data?.id;
+      if (typeof resourceId !== 'string' || !resourceId.startsWith('wfl_shared_resource_')) {
+        res.writeHead(400); res.end('invalid synthetic resource'); return;
+      }
+      if (unsafeReprocessSharedResourceReplays) {
+        processedCount += 1;
+        res.writeHead(200); res.end('reprocessed without event ID dedupe'); return;
+      }
+      const firstId = sharedResourceFirstEvent.get(resourceId);
+      if (firstId !== undefined) {
+        res.writeHead(unsafeRejectSecondResourceEvent && firstId !== id ? 409 : 200);
+        res.end('incorrect resource-keyed dedupe'); return;
+      }
+      sharedResourceFirstEvent.set(resourceId, id);
+      seen.add(id);
+      processedCount += 1;
+      res.writeHead(200); res.end('accepted'); return;
     }
     if ((unsafeCaseFoldEventIds || unsafeRejectCaseVariantEventId) &&
         typeof id === 'string' && id.startsWith('wfl_case_')) {
