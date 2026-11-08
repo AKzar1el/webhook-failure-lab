@@ -24,6 +24,28 @@ function postWithDuplicateWireId(endpoint, { id, timestamp, signature, body, sig
   });
 }
 
+function postWithDuplicateWireTimestamp(endpoint, {
+  id, timestamp, signature, body, signal, staleFirst = false,
+}) {
+  // A fetch Headers object cannot preserve separate physical timestamp fields.
+  const timestamps = [String(timestamp), String(timestamp - 3600)];
+  if (staleFirst) timestamps.reverse();
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'webhook-id': id,
+        'webhook-timestamp': timestamps,
+        'webhook-signature': signature },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode }));
+      response.once('error', reject);
+    });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
+
 function postChunkedSignedUtf8(endpoint, { id, timestamp, signature, body, signal }) {
   const utf8Start = body.indexOf(Buffer.from('€', 'utf8'));
   if (utf8Start < 0) throw new Error('Synthetic UTF-8 split marker missing');
@@ -129,6 +151,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (rejectDuplicateWireEventIdRetry !== undefined &&
       typeof rejectDuplicateWireEventIdRetry !== 'boolean') {
     throw new TypeError('rejectDuplicateWireEventIdRetry must be a boolean');
+  }
+  const rejectDuplicateWireTimestampRetry = config.rejectDuplicateWireTimestampRetry;
+  if (rejectDuplicateWireTimestampRetry !== undefined &&
+      typeof rejectDuplicateWireTimestampRetry !== 'boolean') {
+    throw new TypeError('rejectDuplicateWireTimestampRetry must be a boolean');
   }
   const chunkedSignedUtf8Replay = config.chunkedSignedUtf8Replay;
   if (chunkedSignedUtf8Replay !== undefined && typeof chunkedSignedUtf8Replay !== 'boolean') {
@@ -300,7 +327,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
-    rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry, chunkedSignedUtf8Replay,
+    rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
+    rejectDuplicateWireTimestampRetry, chunkedSignedUtf8Replay,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit, timeoutAfterCommit,
@@ -767,6 +795,45 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[0] === expectedCount &&
         observedCounts[1] === expectedProcessedCount &&
         observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectDuplicateWireTimestampRetry) {
+    const eventId = `wfl_dupts_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const signature = sign({ secret, id: eventId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': eventId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const ambiguousFirst = await postWithDuplicateWireTimestamp(options.endpoint, {
+      id: eventId, timestamp: now, signature, body: rawBody, signal: timeout(),
+    });
+    const afterFirst = await observe();
+    const ambiguousLast = await postWithDuplicateWireTimestamp(options.endpoint, {
+      id: eventId, timestamp: now, signature, body: rawBody, signal: timeout(), staleFirst: true,
+    });
+    const afterLast = await observe();
+    const send = () => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const corrected = await send();
+    const afterCorrected = await observe();
+    const replay = await send();
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [ambiguousFirst.status, ambiguousLast.status,
+      corrected.status, replay.status];
+    const observedCounts = [afterFirst, afterLast, afterCorrected, afterReplay];
+    reports.push({ scenario: 'duplicate_wire_timestamp_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        options.rejectionStatuses.includes(httpStatuses[1]) &&
+        httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

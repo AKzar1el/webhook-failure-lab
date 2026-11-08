@@ -33,6 +33,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitMissingEventIdBeforeReject = false,
   unsafeAcceptDuplicateWireEventId = false, unsafeCacheDuplicateWireEventId = false,
   unsafeCommitDuplicateWireEventIdBeforeReject = false,
+  unsafeAcceptDuplicateWireTimestamp = false, unsafeAcceptLastDuplicateWireTimestamp = false,
+  unsafeCacheDuplicateWireTimestamp = false,
+  unsafeCommitDuplicateWireTimestampBeforeReject = false,
   unsafeDecodeChunkSeparately = false, unsafeRejectChunkedTransfer = false,
   unsafeDedupeByTransferFraming = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
@@ -132,15 +135,21 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const rawBody = Buffer.concat(chunks);
     const body = rawBody.toString('utf8');
     const wireEventIds = [];
+    const wireTimestamps = [];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       if (req.rawHeaders[i].toLowerCase() === 'webhook-id') {
         wireEventIds.push(req.rawHeaders[i + 1]);
+      }
+      if (req.rawHeaders[i].toLowerCase() === 'webhook-timestamp') {
+        wireTimestamps.push(req.rawHeaders[i + 1]);
       }
     }
     const duplicateWireId = wireEventIds.length > 1 &&
       wireEventIds[0].startsWith('wfl_dupheader_');
     // Explicitly use the first physical field for the broken first-wins fixture.
     const id = duplicateWireId ? wireEventIds[0] : req.headers['webhook-id'];
+    const duplicateWireTimestamp = wireTimestamps.length > 1 &&
+      typeof id === 'string' && id.startsWith('wfl_dupts_');
     let missingEventBodyId;
     if (id === undefined) {
       try {
@@ -156,7 +165,12 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         tenantScopedIds.has(`a:${id}`)) {
       res.writeHead(409); res.end('cached tenant ID exposed before authentication'); return;
     }
-    const timestampHeader = req.headers['webhook-timestamp'];
+    // The broken first-wins receiver authenticates one field and ignores the
+    // other. The correct receiver rejects the ambiguous raw wire envelope.
+    const timestampHeader = duplicateWireTimestamp && unsafeAcceptDuplicateWireTimestamp
+      ? wireTimestamps[0]
+      : duplicateWireTimestamp && unsafeAcceptLastDuplicateWireTimestamp
+        ? wireTimestamps.at(-1) : req.headers['webhook-timestamp'];
     const ts = Number(timestampHeader);
     const receiverNow = clock();
     const effectiveRetention = unsafePrematureRetentionEviction
@@ -271,6 +285,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(400); res.end('duplicate wire event ID'); return;
+    }
+    if (duplicateWireTimestamp && !unsafeAcceptDuplicateWireTimestamp &&
+        !unsafeAcceptLastDuplicateWireTimestamp) {
+      if (unsafeCacheDuplicateWireTimestamp) seen.add(id);
+      if (unsafeCommitDuplicateWireTimestampBeforeReject) {
+        processedCount += 1; seen.add(id);
+      }
+      res.writeHead(400); res.end('duplicate wire timestamp'); return;
     }
     if (verifySignatures && !accepted) {
       if (missingEventBodyId) {

@@ -788,6 +788,24 @@ Webhooks receiver, not a universal guarantee about provider HTTP stacks or
 proxy handling. No redirects or non-loopback destinations are contacted;
 the observer still cannot prove external exactly-once effects.
 
+### Opt-in duplicate wire timestamp rejection and retry
+
+Set `"rejectDuplicateWireTimestampRetry": true` to detect receivers that
+trust just one of two **physical** `webhook-timestamp` HTTP fields. The
+lab sends a fresh timestamp signed by the synthetic key plus an additional
+stale timestamp field in **both physical-field orders** through direct Node
+HTTP loopback requests. A local receiver enforcing single-valued signed
+timestamps must reject the ambiguous
+header set with a configured 4xx **without** a committed effect or dedupe
+record, then accept a corrected same-ID, same-body, same-HMAC delivery with
+only the fresh timestamp once. An identical retry must remain idempotent.
+
+Negative fixtures demonstrate first/last-field-wins authentication, rejected-ID
+cache poisoning, and reject-after-commit. This opt-in strict-wire-header
+policy is not guaranteed by every proxy or provider; it tests a synthetic
+local receiver, not hidden external side effects. Redirects are not followed,
+and webhook traffic remains HTTP loopback-only.
+
 ### Opt-in invalid UTF-8 signed JSON recovery
 
 Set `"rejectInvalidUtf8Retry": true` to detect webhook receivers that
