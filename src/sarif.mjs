@@ -58,3 +58,26 @@ export function toSarif(result) {
     }],
   };
 }
+
+// A run that stopped before completing cannot claim any receiver contract results.
+// Do not interpolate exception text: it may contain local URLs or secret-bearing input.
+export function toSarifExecutionError() {
+  return {
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'Webhook Failure Lab', rules: [] } },
+      invocations: [{
+        executionSuccessful: false,
+        toolExecutionNotifications: [{
+          level: 'error',
+          message: { text: 'Webhook Failure Lab could not complete. Check local configuration and receiver availability; no contract outcome was established.' },
+        }],
+      }],
+      results: [],
+      properties: {
+        coverage: [],
+        caveat: 'The run did not complete; no receiver side-effect guarantee or scenario result is asserted.',
+      },
+    }],
+  };
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { runLab } from '../src/run.mjs';
-import { toSarif } from '../src/sarif.mjs';
+import { toSarif, toSarifExecutionError } from '../src/sarif.mjs';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -19,7 +19,12 @@ async function main() {
     console.log(JSON.stringify(format === 'sarif' ? toSarif(result) : result, null, 2));
     return result.success ? 0 : 1;
   } catch (error) {
-    console.error(`Unable to verify: ${error.message}`);
+    if (format === 'sarif') {
+      console.log(JSON.stringify(toSarifExecutionError(), null, 2));
+      console.error('Unable to verify: check local configuration and receiver availability');
+    } else {
+      console.error(`Unable to verify: ${error.message}`);
+    }
     return 2;
   }
 }

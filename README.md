@@ -45,6 +45,14 @@ failed receiver contract and **2** for invalid input or execution errors.
 For example, a mock receiver that accepts signed ambiguous JSON generates a
 `WFL_DUPLICATE_JSON_DATA_KEY_RETRY` finding, verified by a negative fixture.
 
+With `--format sarif`, an invalid configuration, failed local observer, or
+transport error also produces parseable SARIF on stdout with a failed
+`executionSuccessful` invocation and a sanitized tool-execution notification.
+It deliberately contains **no contract findings** because the run did not
+finish; exit status remains 2. The default JSON mode retains its existing
+stderr-only error behavior. Check the local configuration and observer if an
+execution notification appears; it is not evidence of a failed business effect.
+
 The SARIF does not include signing keys, raw payloads, target addresses, or
 arbitrary observer strings. It intentionally does **not** fabricate repository
 source-file locations for a separate webhook receiver; consumers requiring

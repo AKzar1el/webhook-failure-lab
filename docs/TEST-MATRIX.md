@@ -9,6 +9,11 @@ Only failed receiver contracts create SARIF error findings; all executed
 scenarios appear as stable rules, and exit status remains 0 (pass), 1
 (receiver failure), or 2 (input/transport error). The signed duplicate-data-key
 broken receiver is an explicit negative fixture for a machine-readable error.
+In SARIF mode an incomplete run (for example, a deliberately broken localhost
+observer returning 503) emits a failed invocation with a sanitized
+`toolExecutionNotifications` entry and no contract findings, retaining exit 2.
+This reports an execution failure, **not** a receiver contract verdict; the
+default JSON mode retains its stderr-only execution errors.
 SARIF excludes payloads, secrets, URLs, and arbitrary observer strings; it
 does not invent a receiver source-code location. Counts remain receiver-reported.
 

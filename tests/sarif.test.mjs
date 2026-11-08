@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,5 +115,60 @@ test('CLI rejects unsupported output formats without posting a webhook', async (
     assert.match(output.stderr, /Usage:/);
     const state = await fetch(config.observer).then((response) => response.json());
     assert.equal(state.processedCount, 0);
+  });
+});
+
+test('SARIF stays parseable and reports failed execution for a broken local observer', async () => {
+  let observerRequests = 0;
+  let webhookRequests = 0;
+  const server = createServer((request, response) => {
+    if (request.method === 'GET') observerRequests++;
+    if (request.method === 'POST') webhookRequests++;
+    response.writeHead(503, { 'content-type': 'text/plain' });
+    response.end('synthetic local observer unavailable');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const output = await runCli({ endpoint: `${base}/webhook`, observer: `${base}/state` });
+    assert.equal(output.code, 2);
+    const sarif = JSON.parse(output.stdout);
+    assert.equal(sarif.version, '2.1.0');
+    const run = sarif.runs[0];
+    assert.equal(run.invocations[0].executionSuccessful, false);
+    assert.match(run.invocations[0].toolExecutionNotifications[0].message.text,
+      /could not complete/i);
+    assert.deepEqual(run.results, []);
+    assert.equal(observerRequests, 1);
+    assert.equal(webhookRequests, 0);
+    assert.ok(!output.stdout.includes(base));
+    assert.ok(!output.stdout.includes(secret));
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) =>
+      error ? reject(error) : resolve()));
+  }
+});
+
+test('SARIF input failure omits untrusted configuration and does not deliver', async () => {
+  await withReceiver({}, async (config) => {
+    const output = await runCli({ ...config, timeoutMs: -1, debugSecret: secret });
+    assert.equal(output.code, 2);
+    const run = JSON.parse(output.stdout).runs[0];
+    assert.equal(run.invocations[0].executionSuccessful, false);
+    assert.equal(run.invocations[0].toolExecutionNotifications.length, 1);
+    assert.deepEqual(run.results, []);
+    assert.ok(!output.stdout.includes(secret));
+    assert.ok(!output.stdout.includes(config.endpoint));
+    const state = await fetch(config.observer).then((response) => response.json());
+    assert.equal(state.processedCount, 0);
+  });
+});
+
+test('default JSON mode preserves the existing exit-2 error channel', async () => {
+  await withReceiver({}, async (config) => {
+    const output = await runCli({ ...config, timeoutMs: -1 }, 'json');
+    assert.equal(output.code, 2);
+    assert.equal(output.stdout, '');
+    assert.match(output.stderr, /Unable to verify/);
   });
 });
