@@ -600,6 +600,21 @@ Unlike the invalid-HMAC retry, this checks *absent* authentication metadata.
 This is an opt-in local adapter contract, not proof of a provider's redelivery
 policy or unseen external side effects.
 
+### Opt-in retry after missing signed timestamp
+
+Set `"rejectMissingTimestampRetry": true` to require that a local webhook
+receiver rejects a request missing `webhook-timestamp`, even when its ID,
+body and `webhook-signature` were prepared using a valid synthetic timestamp.
+The first request must return a configured 4xx, without committing an effect
+or reserving the ID. The lab then sends the exact same body, ID and HMAC
+**with** the signed timestamp header, followed by an identical replay.
+Both corrected deliveries must be accepted, with only one new observed effect.
+Broken localhost fixtures detect missing-timestamp acceptance, rejected-ID
+poisoning and reject-after-commit behavior. This is distinct from a missing
+signature: an HMAC header alone does not supply authenticated freshness.
+The opt-in check tests only a declared local receiver contract; it cannot
+prove a provider's retry policy or unobserved external side effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.

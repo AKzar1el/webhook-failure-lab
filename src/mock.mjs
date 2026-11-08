@@ -21,6 +21,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcceptRejectedSignature = false,
   unsafeAcceptMissingSignature = false, unsafeCacheMissingSignature = false,
   unsafeCommitMissingSignatureBeforeReject = false,
+  unsafeAcceptMissingTimestamp = false, unsafeCacheMissingTimestamp = false,
+  unsafeCommitMissingTimestampBeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -209,6 +211,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           id.startsWith('wfl_authretry_')) ||
         (unsafeAcceptMissingSignature && typeof id === 'string' &&
           id.startsWith('wfl_missinghmac_') && signature === undefined) ||
+        (unsafeAcceptMissingTimestamp && typeof id === 'string' &&
+          id.startsWith('wfl_missingts_') && timestampHeader === undefined) ||
         (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
@@ -226,6 +230,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           signature === undefined) {
         if (unsafeCacheMissingSignature) seen.add(id);
         if (unsafeCommitMissingSignatureBeforeReject) {
+          processedCount += 1;
+          seen.add(id);
+        }
+      }
+      if (typeof id === 'string' && id.startsWith('wfl_missingts_') &&
+          timestampHeader === undefined) {
+        if (unsafeCacheMissingTimestamp) seen.add(id);
+        if (unsafeCommitMissingTimestampBeforeReject) {
           processedCount += 1;
           seen.add(id);
         }
