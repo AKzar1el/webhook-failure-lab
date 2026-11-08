@@ -227,6 +227,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (distinctEventsSameResource !== undefined && typeof distinctEventsSameResource !== 'boolean') {
     throw new TypeError('distinctEventsSameResource must be a boolean');
   }
+  const distinctIdsIdenticalBody = config.distinctIdsIdenticalBody;
+  if (distinctIdsIdenticalBody !== undefined && typeof distinctIdsIdenticalBody !== 'boolean') {
+    throw new TypeError('distinctIdsIdenticalBody must be a boolean');
+  }
   const tenantScopedEventIds = config.tenantScopedEventIds;
   if (tenantScopedEventIds !== undefined && typeof tenantScopedEventIds !== 'boolean') {
     throw new TypeError('tenantScopedEventIds must be a boolean');
@@ -401,7 +405,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
-    distinctEventsSameResource,
+    distinctEventsSameResource, distinctIdsIdenticalBody,
     tenantScopedEventIds,
     rejectFutureSignedTimestamp, rejectFutureDuplicateSignature, rejectNoncanonicalTimestamp,
     rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
@@ -1828,6 +1832,38 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const expectedCounts = [expectedCount + 1, expectedCount + 2,
       expectedCount + 2, expectedCount + 2];
     reports.push({ scenario: 'distinct_events_same_resource',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count, index) => count === expectedCounts[index]),
+      httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
+  }
+
+  if (options.distinctIdsIdenticalBody) {
+    const eventRoot = `wfl_identical_${randomUUID().replaceAll('-', '')}`;
+    const eventIds = [`${eventRoot}_one`, `${eventRoot}_two`];
+    // Neither signed delivery ID appears in the body: the raw bytes must match.
+    const rawBody = JSON.stringify({ type: 'test.delivery.received',
+      timestamp: new Date(now * 1000).toISOString(),
+      data: { id: `wfl_identical_payload_${randomUUID().replaceAll('-', '')}` } });
+    const events = eventIds.map((eventId) => ({
+      eventId, signature: sign({ secret, id: eventId, timestamp: now, body: rawBody }),
+    }));
+    const httpStatuses = [];
+    const observedCounts = [];
+    for (const event of [...events, ...events]) {
+      const response = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { 'content-type': 'application/json',
+          'webhook-id': event.eventId, 'webhook-timestamp': String(now),
+          'webhook-signature': event.signature },
+        body: rawBody,
+      });
+      httpStatuses.push(response.status);
+      observedCounts.push(await observe());
+    }
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'distinct_ids_identical_signed_body',
       passed: httpStatuses.every((status) => status === options.successStatus) &&
         observedCounts.every((count, index) => count === expectedCounts[index]),
       httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
