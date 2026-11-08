@@ -202,6 +202,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectMissingSignatureRetry !== 'boolean') {
     throw new TypeError('rejectMissingSignatureRetry must be a boolean');
   }
+  const rejectUnsupportedSignatureVersion = config.rejectUnsupportedSignatureVersion;
+  if (rejectUnsupportedSignatureVersion !== undefined &&
+      typeof rejectUnsupportedSignatureVersion !== 'boolean') {
+    throw new TypeError('rejectUnsupportedSignatureVersion must be a boolean');
+  }
   const rejectMissingTimestampRetry = config.rejectMissingTimestampRetry;
   if (rejectMissingTimestampRetry !== undefined &&
       typeof rejectMissingTimestampRetry !== 'boolean') {
@@ -422,7 +427,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectWrongContentTypeRetry, rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
-    retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
+    retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectUnsupportedSignatureVersion,
+    rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
     rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
@@ -792,6 +798,40 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const httpStatuses = [missing.status, corrected.status, replay.status];
     const observedCounts = [afterMissing, afterCorrected, afterReplay];
     reports.push({ scenario: 'missing_signature_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectUnsupportedSignatureVersion) {
+    const eventId = `wfl_sigversion_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const validSignature = sign({ secret, id: eventId, timestamp: now, body: rawBody });
+    // Preserve the correct digest; changing only the version catches parsers
+    // that authenticate the bytes but silently ignore the algorithm identifier.
+    const unsupportedSignature = `v2,${validSignature.slice(3)}`;
+    const send = (signature) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: rawBody,
+    });
+    const unsupported = await send(unsupportedSignature);
+    const afterUnsupported = await observe();
+    const corrected = await send(validSignature);
+    const afterCorrected = await observe();
+    const replay = await send(validSignature);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [unsupported.status, corrected.status, replay.status];
+    const observedCounts = [afterUnsupported, afterCorrected, afterReplay];
+    reports.push({ scenario: 'unsupported_signature_version_retry',
       passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&

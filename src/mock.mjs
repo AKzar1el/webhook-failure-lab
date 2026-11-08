@@ -29,6 +29,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcceptRejectedSignature = false,
   unsafeAcceptMissingSignature = false, unsafeCacheMissingSignature = false,
   unsafeCommitMissingSignatureBeforeReject = false,
+  unsafeIgnoreUnsupportedSignatureVersion = false,
+  unsafeCacheUnsupportedSignatureVersion = false,
+  unsafeCommitUnsupportedSignatureVersionBeforeReject = false,
   unsafeAcceptMissingTimestamp = false, unsafeCacheMissingTimestamp = false,
   unsafeCommitMissingTimestampBeforeReject = false,
   unsafeAcceptMissingEventId = false, unsafeCacheMissingEventId = false,
@@ -299,6 +302,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const hasValidFutureSignature = syntheticFuture &&
       verify({ secret, ...metadata, now: ts });
     const acceptedCurrent = verify({ secret, ...metadata }) ||
+      (unsafeIgnoreUnsupportedSignatureVersion && typeof id === 'string' &&
+        id.startsWith('wfl_sigversion_') && typeof signature === 'string' &&
+        signature.startsWith('v2,') &&
+        verify({ secret, ...metadata, signature: `v1,${signature.slice(3)}` })) ||
       (unsafeAcceptFutureTimestamp && hasValidFutureSignature) ||
       (unsafeAcceptExpiredReplay && expiredReplay &&
         verify({ secret, ...metadata, tolerance: Number.POSITIVE_INFINITY }));
@@ -396,6 +403,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           signature === undefined) {
         if (unsafeCacheMissingSignature) seen.add(id);
         if (unsafeCommitMissingSignatureBeforeReject) {
+          processedCount += 1;
+          seen.add(id);
+        }
+      }
+      if (typeof id === 'string' && id.startsWith('wfl_sigversion_') &&
+          typeof signature === 'string' && signature.startsWith('v2,')) {
+        if (unsafeCacheUnsupportedSignatureVersion) seen.add(id);
+        if (unsafeCommitUnsupportedSignatureVersionBeforeReject) {
           processedCount += 1;
           seen.add(id);
         }
