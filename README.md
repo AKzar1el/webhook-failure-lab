@@ -320,6 +320,16 @@ cannot control processes, so a missing programmatic callback fails closed.
 Run `restartAfterCommit` and `crashAfterPersist` separately. Use only
 synthetic keys, disposable local storage and a development-only adapter.
 
+Optionally add `parallelCrashRecoveryRetries: 4` (integer 2-8) **together
+with** `crashAfterPersist: true`. After observing the real process exit, the
+runner sends concurrent copies of the exact signed event to the fresh local
+receiver, checks that every request succeeds without increasing the already
+committed effect count, then checks one final sequential replay. A deliberately
+broken fixture drops the persisted dedupe record on restart and exposes a
+check-before-write race; the observed count rises and fails the probe. This
+shares the bounded retry-count option with the separate precommit test, but
+the two crash modes cannot be enabled together.
+
 This is a **post-rename process-exit** contract, not a proof of power-loss
 durability, fsync, a torn multi-write database transaction, or external
 exactly-once effects. Both recovery controller and observer are user-supplied.

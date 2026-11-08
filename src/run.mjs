@@ -176,8 +176,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
        parallelCrashRecoveryRetries < 2 || parallelCrashRecoveryRetries > 8)) {
     throw new TypeError('parallelCrashRecoveryRetries must be an integer between 2 and 8');
   }
-  if (parallelCrashRecoveryRetries !== undefined && crashBeforeCommit !== true) {
-    throw new TypeError('parallelCrashRecoveryRetries requires crashBeforeCommit: true');
+  if (parallelCrashRecoveryRetries !== undefined && !crashBeforeCommit && !crashAfterPersist) {
+    throw new TypeError('parallelCrashRecoveryRetries requires crashBeforeCommit or crashAfterPersist');
   }
   const retentionWindowSeconds = config.retentionWindowSeconds;
   if (retentionWindowSeconds !== undefined &&
@@ -918,24 +918,37 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const recoveredEndpoint = requireLoopbackUrl(recovered?.endpoint, 'recoverReceiver endpoint');
     const recoveredObserver = requireLoopbackUrl(recovered?.observer, 'recoverReceiver observer');
     const afterRecovery = await observeState(undefined, recoveredObserver);
-    const retry = await request(recoveredEndpoint, {
-      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: crashBody,
-    });
+    const retries = await Promise.all(Array.from({
+      length: options.parallelCrashRecoveryRetries ?? 1,
+    }, () => request(recoveredEndpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(), headers, body: crashBody,
+    })));
     const afterRetry = await observeState(undefined, recoveredObserver);
+    const replay = options.parallelCrashRecoveryRetries === undefined ? null :
+      await request(recoveredEndpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(), headers, body: crashBody,
+      });
+    const afterReplay = replay === null ? null :
+      await observeState(undefined, recoveredObserver);
     const expectedProcessedCount = expectedCount + 1;
     const observedCounts = [beforeCrash.processedCount, afterRecovery.processedCount,
       afterRetry.processedCount];
+    if (afterReplay !== null) observedCounts.push(afterReplay.processedCount);
     const receiverInstanceIds = [beforeCrash.receiverInstanceId ?? null,
       afterRecovery.receiverInstanceId ?? null];
-    reports.push({ scenario: 'crash_after_persist_before_ack',
+    const retryHttpStatuses = retries.map((response) => response.status);
+    reports.push({ scenario: options.parallelCrashRecoveryRetries === undefined ?
+      'crash_after_persist_before_ack' : 'crash_after_persist_parallel_retries',
       passed: firstAttemptOutcome === 'transport_error' &&
-        retry.status === options.successStatus &&
+        retryHttpStatuses.every((status) => status === options.successStatus) &&
+        (replay === null || replay.status === options.successStatus) &&
         observedCounts[0] === expectedCount &&
-        observedCounts[1] === expectedProcessedCount &&
-        observedCounts[2] === expectedProcessedCount &&
+        observedCounts.slice(1).every((count) => count === expectedProcessedCount) &&
         receiverInstanceIds.every((value) => typeof value === 'string' && value.length > 0) &&
         receiverInstanceIds[0] !== receiverInstanceIds[1],
-      firstAttemptOutcome, retryHttpStatus: retry.status, observedCounts,
+      firstAttemptOutcome, retryHttpStatus: retryHttpStatuses[0], retryHttpStatuses,
+      ...(replay === null ? {} : { replayHttpStatus: replay.status }),
+      observedCounts,
       receiverInstanceIds, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }

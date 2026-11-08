@@ -104,7 +104,7 @@ async function withRestartReceiver({ forgetDedupeOnRestart = false } = {}, fn) {
 async function withCrashReceiver({
   loseDedupeOnCrash = false, loseCountOnCrash = false, ignoreCrashFault = false,
   beforeCommit = false, preCrashPoisonDedupe = false, preCrashExtraEffect = false,
-  ignorePreCrashFault = false, raceOnRecovery = false,
+  ignorePreCrashFault = false, raceOnRecovery = false, forgetDedupeOnRecovery = false,
 } = {}, fn) {
   const directory = await mkdtemp(join(tmpdir(), 'wfl-crash-'));
   const statePath = join(directory, 'durable.json');
@@ -134,7 +134,9 @@ async function withCrashReceiver({
       }
       assert.equal(oldChild.exitCode, beforeCommit ? 48 : 47,
         'Fixture must terminate abruptly with the expected crash exit code');
-      live = await launchRestartReceiver(statePath, { raceOnRecovery });
+      live = await launchRestartReceiver(statePath, {
+        raceOnRecovery, forgetDedupe: forgetDedupeOnRecovery,
+      });
       assert.notEqual(live.child.pid, oldPid, 'Recovery must launch a new OS process');
       return live.config;
     };
@@ -636,6 +638,49 @@ test('abrupt post-persist crash recovers a signed event without another observed
     assert.equal(crash.retryHttpStatus, 200);
     assert.notEqual(crash.receiverInstanceIds[0], crash.receiverInstanceIds[1]);
     assert.equal(crash.expectedProcessedCount, 2);
+  });
+});
+
+test('postpersist parallel retries preserve one committed effect after a real receiver crash', async () => {
+  await withCrashReceiver({}, async (config, recoverReceiver) => {
+    const result = await runLab({ ...config, crashAfterPersist: true,
+      parallelCrashRecoveryRetries: 4 }, { secret, recoverReceiver });
+    assert.equal(result.success, true);
+    const crash = result.scenarios.at(-1);
+    assert.equal(crash.scenario, 'crash_after_persist_parallel_retries');
+    assert.equal(crash.firstAttemptOutcome, 'transport_error');
+    assert.deepEqual(crash.retryHttpStatuses, [200, 200, 200, 200]);
+    assert.equal(crash.replayHttpStatus, 200);
+    assert.deepEqual(crash.observedCounts, [1, 2, 2, 2]);
+    assert.notEqual(crash.receiverInstanceIds[0], crash.receiverInstanceIds[1]);
+  });
+});
+
+test('postpersist parallel retries detect a lost durable dedupe record and recovery race', async () => {
+  await withCrashReceiver({ forgetDedupeOnRecovery: true, raceOnRecovery: true },
+    async (config, recoverReceiver) => {
+      const result = await runLab({ ...config, crashAfterPersist: true,
+        parallelCrashRecoveryRetries: 4 }, { secret, recoverReceiver });
+      assert.equal(result.success, false);
+      const crash = result.scenarios.at(-1);
+      assert.equal(crash.scenario, 'crash_after_persist_parallel_retries');
+      assert.equal(crash.observedCounts[1], 2);
+      assert.ok(crash.observedCounts[2] > 2);
+      assert.equal(crash.passed, false);
+    });
+});
+
+test('postpersist parallel retry count validates prerequisites before any local HTTP request', async () => {
+  await withServer({}, async (config) => {
+    for (const parallelCrashRecoveryRetries of [0, 1, 9, 2.5, '4', true, null, [], {}]) {
+      await assert.rejects(() => runLab({ ...config, crashAfterPersist: true,
+        parallelCrashRecoveryRetries }, { secret, recoverReceiver: async () => config }),
+      /parallelCrashRecoveryRetries/);
+    }
+    await assert.rejects(() => runLab({ ...config, parallelCrashRecoveryRetries: 4 },
+      { secret }), /crashBeforeCommit|crashAfterPersist/);
+    await assert.rejects(() => runLab({ ...config, crashAfterPersist: true,
+      parallelCrashRecoveryRetries: 4 }, { secret }), /recoverReceiver/);
   });
 });
 
