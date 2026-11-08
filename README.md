@@ -633,6 +633,23 @@ Standard Webhooks receiver expecting the `webhook-id` header. A JSON
 scenario does not establish provider retry policy or invisible business
 effects and does not contact an external endpoint.
 
+### Opt-in invalid UTF-8 signed JSON recovery
+
+Set `"rejectInvalidUtf8Retry": true` to detect webhook receivers that
+authenticate a JSON payload but silently replace malformed UTF-8 bytes before
+processing it. The lab sends JSON containing an invalid byte **inside a JSON
+string** and computes a valid Standard Webhooks HMAC over the exact raw bytes.
+The receiver must reject the delivery with a configured 4xx, without recording
+an effect or reserving the event ID. A corrected, independently signed UTF-8
+body using the **same ID** must commit once; an identical replay must dedupe.
+
+Broken localhost fixtures accept lossy Unicode replacement, poison dedupe on
+rejection, or commit before returning 400. The local mock buffers request bytes
+before UTF-8 decoding and validates this probe with a fatal decoder. This
+opt-in rule applies to receivers that require UTF-8 JSON; it is not a universal
+provider redelivery contract. All traffic is loopback-only, and the observer
+cannot establish hidden business-effect correctness.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.

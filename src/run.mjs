@@ -71,6 +71,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectMissingEventIdRetry !== 'boolean') {
     throw new TypeError('rejectMissingEventIdRetry must be a boolean');
   }
+  const rejectInvalidUtf8Retry = config.rejectInvalidUtf8Retry;
+  if (rejectInvalidUtf8Retry !== undefined && typeof rejectInvalidUtf8Retry !== 'boolean') {
+    throw new TypeError('rejectInvalidUtf8Retry must be a boolean');
+  }
   const caseSensitiveEventIds = config.caseSensitiveEventIds;
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
@@ -224,7 +228,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
-    rejectMissingEventIdRetry,
+    rejectMissingEventIdRetry, rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
@@ -547,6 +551,44 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const httpStatuses = [missing.status, corrected.status, replay.status];
     const observedCounts = [afterMissing, afterCorrected, afterReplay];
     reports.push({ scenario: 'missing_event_id_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectInvalidUtf8Retry) {
+    const eventId = `wfl_utf8_${randomUUID().replaceAll('-', '')}`;
+    const event = { type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: eventId, note: '!' } };
+    // Replace a JSON string's ASCII marker with an invalid standalone UTF-8 byte.
+    // A lossy decoder still produces parseable JSON, exposing silent replacement.
+    const malformed = Buffer.from(JSON.stringify(event), 'utf8');
+    const marker = malformed.lastIndexOf(0x21);
+    if (marker === -1) throw new Error('UTF-8 probe marker was not found');
+    malformed[marker] = 0xff;
+    const corrected = JSON.stringify({ ...event, data: { id: eventId, note: 'valid' } });
+    const send = (body) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: eventId, timestamp: now, body }) },
+      body,
+    });
+    const invalid = await send(malformed);
+    const afterInvalid = await observe();
+    const valid = await send(corrected);
+    const afterValid = await observe();
+    const replay = await send(corrected);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, valid.status, replay.status];
+    const observedCounts = [afterInvalid, afterValid, afterReplay];
+    reports.push({ scenario: 'invalid_utf8_signed_retry',
       passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
