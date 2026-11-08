@@ -56,6 +56,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof retryAfterRejectedSignature !== 'boolean') {
     throw new TypeError('retryAfterRejectedSignature must be a boolean');
   }
+  const rejectMissingSignatureRetry = config.rejectMissingSignatureRetry;
+  if (rejectMissingSignatureRetry !== undefined &&
+      typeof rejectMissingSignatureRetry !== 'boolean') {
+    throw new TypeError('rejectMissingSignatureRetry must be a boolean');
+  }
   const caseSensitiveEventIds = config.caseSensitiveEventIds;
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
@@ -208,7 +213,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     rejectWrongContentTypeRetry, acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectOversizedSignedPayload,
-    retryAfterRejectedSignature,
+    retryAfterRejectedSignature, rejectMissingSignatureRetry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
@@ -433,6 +438,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const observedCounts = [afterInvalid, afterCorrected, afterReplay];
     reports.push({ scenario: 'invalid_signed_event_schema_retry',
       passed: httpStatuses[0] === 422 &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectMissingSignatureRetry) {
+    const missingId = `wfl_missinghmac_${randomUUID().replaceAll('-', '')}`;
+    const missingBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: missingId } });
+    const signature = sign({ secret, id: missingId, timestamp: now, body: missingBody });
+    const send = (withSignature) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': missingId,
+        'webhook-timestamp': String(now),
+        ...(withSignature ? { 'webhook-signature': signature } : {}) },
+      body: missingBody,
+    });
+    // Rejecting an unauthenticated ID must not poison its later signed retry.
+    const missing = await send(false);
+    const afterMissing = await observe();
+    const corrected = await send(true);
+    const afterCorrected = await observe();
+    const replay = await send(true);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [missing.status, corrected.status, replay.status];
+    const observedCounts = [afterMissing, afterCorrected, afterReplay];
+    reports.push({ scenario: 'missing_signature_retry',
+      passed: options.rejectionStatuses.includes(httpStatuses[0]) &&
         httpStatuses[1] === options.successStatus &&
         httpStatuses[2] === options.successStatus &&
         observedCounts[0] === expectedCount &&
