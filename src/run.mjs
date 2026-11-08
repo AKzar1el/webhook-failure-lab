@@ -221,6 +221,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (retryAfterTransientFailure !== undefined && typeof retryAfterTransientFailure !== 'boolean') {
     throw new TypeError('retryAfterTransientFailure must be a boolean');
   }
+  const retryAfterRateLimit = config.retryAfterRateLimit;
+  if (retryAfterRateLimit !== undefined && typeof retryAfterRateLimit !== 'boolean') {
+    throw new TypeError('retryAfterRateLimit must be a boolean');
+  }
   const retryAfterCommittedError = config.retryAfterCommittedError;
   if (retryAfterCommittedError !== undefined && typeof retryAfterCommittedError !== 'boolean') {
     throw new TypeError('retryAfterCommittedError must be a boolean');
@@ -363,7 +367,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry, chunkedSignedUtf8Replay,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
-    retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit, timeoutAfterCommit,
+    retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
+    lostAckAfterCommit, timeoutAfterCommit,
     timeoutBeforeCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
@@ -1113,6 +1118,42 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       httpStatuses: [first.status, second.status], observedCountAfterFailure,
       expectedCountAfterFailure: expectedCount, observedProcessedCount: count,
       expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.retryAfterRateLimit) {
+    const id = `wfl_429_${randomUUID().replaceAll('-', '')}`;
+    const body = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': id,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id, timestamp: now, body }) };
+    // A declared local adapter refuses the first attempt before reserving the signed ID.
+    const throttled = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { ...headers, 'x-wfl-test-fault': 'rate-limit-before-process-once' }, body,
+    });
+    const afterThrottle = await observe();
+    const retryAfterZero = throttled.headers?.get('retry-after') === '0';
+    const retry = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body,
+    });
+    const afterRetry = await observe();
+    const replay = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body,
+    });
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [throttled.status, retry.status, replay.status];
+    const observedCounts = [afterThrottle, afterRetry, afterReplay];
+    reports.push({ scenario: 'retry_after_rate_limit',
+      passed: httpStatuses[0] === 429 && retryAfterZero &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, retryAfterZero, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

@@ -289,6 +289,25 @@ Add `"retryAfterTransientFailure": true` to `lab.json` to enable a fifth check (
 
 This check is opt-in because ordinary webhook handlers will not understand that injection header. If your handler ignores it, the lab reports a failed first-attempt status rather than silently claiming retry coverage. The built-in loopback fixture implements the adapter; its deliberately broken variant is tested in `tests/integration.test.mjs`. **Never enable fault injection on public or production handlers.** This is a controlled failed-before-processing retry, not an automatic retry scheduler, lost-acknowledgement simulation, crash-recovery proof, or exactly-once guarantee.
 
+### Optional HTTP 429 rate-limit recovery
+
+Set `"retryAfterRateLimit": true` for a **local synthetic throttling contract**
+distinct from the HTTP 503 failure check. On the first fresh signed
+`wfl_429_` delivery, the development-only receiver adapter must recognize
+`x-wfl-test-fault: rate-limit-before-process-once`, return HTTP **429** with
+`Retry-After: 0`, and neither commit an observed effect nor reserve the
+delivery ID. The lab immediately retries the **identical signed bytes**
+without the injection header; the retry must succeed once and an exact replay
+must remain idempotent. The report includes only a boolean indicating whether
+the required `Retry-After: 0` was present, not arbitrary response header text.
+
+Broken loopback fixtures expose deduplication poisoning, a side effect before
+the 429, missing retry guidance, or a receiver ignoring the adapter entirely.
+This is a deliberately constrained zero-delay retry, **not** a general backoff
+scheduler, provider rate-limit policy, traffic load test, or proof of external
+exactly-once business effects. Never expose this unsigned fault header or the
+observer on a production service.
+
 ### Optional committed delivery followed by HTTP 503
 
 Add `"retryAfterCommittedError": true` to `lab.json` for a distinct **ambiguous
