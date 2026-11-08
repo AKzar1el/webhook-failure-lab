@@ -59,6 +59,7 @@ does not invent a receiver source-code location. Counts remain receiver-reported
 | Committed event returns HTTP 503, then identical signed delivery retried (opt-in) | First attempt returns 503 *after* one observed effect; retry succeeds with no additional effect | Local integration tests with missing dedupe key, precommit failure, and ignored fault negative fixtures |
 | Committed event loses HTTP acknowledgement, then same signed event redelivered (opt-in) | First attempt raises transport error but increases observer count once; retry is accepted with no second effect | Local integration test, plus fixture that loses the idempotency record after commit |
 | Client times out waiting for a committed signed event (opt-in) | Receiver commits once but holds HTTP acknowledgement past the client's `timeoutMs`; the harness observes a client timeout, then identical signed retry succeeds without a second effect | Synthetic localhost held-response fixture, with broken lost-dedupe and ignored-fault negative receivers |
+| Client times out before a declared synthetic precommit cancellation (opt-in) | First signed delivery holds response until client deadline without reserving ID or committing; identical signed retry commits once and exact replay dedupes | Local fault `hold-before-commit-until-timeout`; negative fixtures poison the dedupe cache, commit during the fault, or ignore the timeout control |
 | Dependent resource activation delivered before resource creation (opt-in) | Premature activation receives 409, leaves resource missing and count unchanged; creation advances to created; identical signed activation retry advances to activated, one effect per accepted transition | Local integration tests with premature-apply and rejected-event-deduplication negative fixtures |
 | Delayed replay of resource creation after activation (opt-in) | Signed creation and activation each commit once; identical signed creation replay is acknowledged without another effect or regressing activated state | Local integration tests with rewind, reject-duplicate and hidden-effect negative fixtures |
 | Secret rotation: previous signing key still valid, retired key revoked (opt-in) | Fresh previous-key event accepted once; different retired-key event rejected with no effect | Local integration tests with previous-key rejection, retired-key acceptance and reject-but-commit negative fixtures |
@@ -127,6 +128,16 @@ count, then retry the exact same signed event without the fault header. A
 lost dedupe record or ignored header fails the scenario. It is not a provider
 timeout simulation or a durable/external exactly-once guarantee, and the
 unsigned fault adapter must never be exposed in production.
+Add `"timeoutBeforeCommit": true` for the complementary, explicitly
+synthetic cancellation-before-commit contract. The local receiver must hold
+the first response to `x-wfl-test-fault: hold-before-commit-until-timeout`
+past the client's deadline, neither commit an effect nor reserve the signed
+ID, and then accept an identical retry exactly once; an identical replay
+must remain idempotent. The harness verifies a client timeout, unchanged
+pre-retry count and post-retry count +1. Local negative fixtures poison the
+ID, commit prematurely or ignore the fault. Real network timeouts do **not**
+imply absence of commit, and the observer is not a guarantee about external
+side effects; this fault header must not be used in production.
 Add `"outOfOrderStateTransitions": true` for a separate dependent-event
 contract. The local receiver must recognize the synthetic types
 `test.resource.created` and `test.resource.activated` with a shared
