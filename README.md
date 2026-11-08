@@ -271,6 +271,23 @@ This is an opt-in local contract for receivers expected to act on both event
 types, not a universal provider rule or proof of external business effects.
 Omitting it leaves the four default scenarios unchanged.
 
+### Optional distinct signed IDs with identical payload bytes
+
+Add `"distinctIdsIdenticalBody": true` to `lab.json` to catch receivers that
+deduplicate by a JSON body digest instead of the authenticated webhook delivery
+ID. The lab sends two independently signed IDs with **exactly the same raw
+JSON bytes**, then replays each unchanged signature. Both new IDs must report
+an accepted delivery and increment the observer once each; neither replay
+may increment it again. Broken loopback fixtures coalesce by body, reject the
+second signed ID as a collision, or count exact retries as fresh effects.
+
+This deliberately uses a synthetic `test.delivery.received` contract in which
+each new signed ID represents a separately countable delivery. Enable it only
+for a receiver with those semantics: some real event types intentionally
+implement resource-level idempotency instead. Passing proves only the
+receiver-reported count, not unobserved external effects. The option is
+off by default.
+
 ### Optional concurrent duplicate race check
 
 Add `"concurrentDuplicateDeliveries": 4` to the local `lab.json` config to also send four **simultaneous, identically signed** requests using a fresh event ID. The check requires every request to return `successStatus` and the observer count to increase by **exactly one** after all requests finish. The count can be set to an integer from 2 through 8; values outside that range are rejected before any requests are sent. Omitting it retains the original four-scenario behavior.

@@ -65,6 +65,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCaseFoldEventIds = false, unsafeRejectCaseVariantEventId = false,
   unsafeDedupeByResourceId = false, unsafeRejectSecondResourceEvent = false,
   unsafeReprocessSharedResourceReplays = false,
+  unsafeDedupeByBodyHash = false, unsafeRejectIdenticalBodyAsCollision = false,
+  unsafeReprocessIdenticalBodyReplays = false,
   supportTenantScopes = true, unsafeGlobalTenantDedupe = false,
   unsafeRejectTenantCollision = false, unsafeAcceptOtherTenantKey = false,
   unsafeCommitWrongTenantBeforeReject = false,
@@ -91,6 +93,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const seenResignedSignatures = new Set();
   const caseFoldedIds = new Map();
   const sharedResourceFirstEvent = new Map();
+  const identicalBodyFirstEvent = new Map();
   const tenantScopedIds = new Set();
   const tenantGlobalOwners = new Map();
   const failedRetryIds = new Set();
@@ -558,6 +561,25 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       sharedResourceFirstEvent.set(resourceId, id);
       seen.add(id);
       processedCount += 1;
+      res.writeHead(200); res.end('accepted'); return;
+    }
+    if (typeof id === 'string' && id.startsWith('wfl_identical_') &&
+        (unsafeDedupeByBodyHash || unsafeRejectIdenticalBodyAsCollision ||
+          unsafeReprocessIdenticalBodyReplays)) {
+      const firstId = identicalBodyFirstEvent.get(body);
+      if (unsafeReprocessIdenticalBodyReplays) {
+        processedCount += 1; seen.add(id);
+        res.writeHead(200); res.end('replayed as new effect'); return;
+      }
+      if (firstId !== undefined && firstId !== id) {
+        res.writeHead(unsafeRejectIdenticalBodyAsCollision ? 409 : 200);
+        res.end('incorrect body-keyed deduplication'); return;
+      }
+      if (!seen.has(id)) {
+        identicalBodyFirstEvent.set(body, id);
+        seen.add(id);
+        processedCount += 1;
+      }
       res.writeHead(200); res.end('accepted'); return;
     }
     if ((unsafeCaseFoldEventIds || unsafeRejectCaseVariantEventId) &&
