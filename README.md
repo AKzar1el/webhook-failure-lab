@@ -736,6 +736,24 @@ Standard Webhooks receiver expecting the `webhook-id` header. A JSON
 scenario does not establish provider retry policy or invisible business
 effects and does not contact an external endpoint.
 
+### Opt-in duplicate wire event-ID rejection and retry
+
+Set `"rejectDuplicateWireEventIdRetry": true` to detect receivers that
+trust the first of two **physical** `webhook-id` HTTP header fields. The lab
+uses a direct Node HTTP loopback request (not fetch, which combines duplicate
+fields) with a valid signature for the first ID and a different second ID.
+The receiver must reject this ambiguous request with a configured 4xx
+before any effect or deduplication write. A corrected request with a single
+signed ID field and exactly the same body, timestamp and signature must
+commit once, and an identical replay must not commit again.
+
+The localhost negative fixtures model first-header-wins authentication,
+poisoning the rejected ID's deduplication cache, and committing before
+rejecting. This is a declared strict-header policy for a local Standard
+Webhooks receiver, not a universal guarantee about provider HTTP stacks or
+proxy handling. No redirects or non-loopback destinations are contacted;
+the observer still cannot prove external exactly-once effects.
+
 ### Opt-in invalid UTF-8 signed JSON recovery
 
 Set `"rejectInvalidUtf8Retry": true` to detect webhook receivers that
