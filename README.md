@@ -615,6 +615,24 @@ signature: an HMAC header alone does not supply authenticated freshness.
 The opt-in check tests only a declared local receiver contract; it cannot
 prove a provider's retry policy or unobserved external side effects.
 
+### Opt-in retry after missing signed event ID
+
+Set `"rejectMissingEventIdRetry": true` to check that a local receiver
+rejects a signed webhook delivery without the `webhook-id` header, even
+when the JSON body contains an event ID and the HMAC was computed using it.
+The missing-header request must return a configured 4xx without recording
+an effect or reserving the body ID. A corrected delivery with the exact
+same body, timestamp and signature, but with the signed ID header restored,
+must commit once; an identical replay must be idempotent.
+
+Three deliberately broken localhost receivers trust the unauthenticated
+body ID in place of the wire header, reserve the body ID on rejection, or
+commit an effect before returning 401. This opt-in contract assumes a local
+Standard Webhooks receiver expecting the `webhook-id` header. A JSON
+`data.id` is not a substitute for the signature's event-ID input. The
+scenario does not establish provider retry policy or invisible business
+effects and does not contact an external endpoint.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
