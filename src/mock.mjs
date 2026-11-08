@@ -25,6 +25,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitMissingTimestampBeforeReject = false,
   unsafeAcceptMissingEventId = false, unsafeCacheMissingEventId = false,
   unsafeCommitMissingEventIdBeforeReject = false,
+  supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
+  unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -105,11 +107,15 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     if (req.method !== 'POST' || url.pathname !== '/webhook') {
       res.writeHead(404); res.end(); return;
     }
-    let body = '';
+    const chunks = [];
+    let bodyBytes = 0;
     for await (const chunk of req) {
-      body += chunk.toString('utf8');
-      if (body.length > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
+      bodyBytes += chunk.length;
+      if (bodyBytes > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
+      chunks.push(chunk);
     }
+    const rawBody = Buffer.concat(chunks);
+    const body = rawBody.toString('utf8');
     const id = req.headers['webhook-id'];
     let missingEventBodyId;
     if (id === undefined) {
@@ -195,7 +201,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       try { authenticatedId = JSON.parse(body)?.data?.id; }
       catch { authenticatedId = undefined; }
     }
-    let authenticatedBody = body;
+    let authenticatedBody = rawBody;
     if (unsafeCanonicalizeRawJsonBeforeVerify && rawJsonProbe) {
       try { authenticatedBody = JSON.stringify(JSON.parse(body)); }
       catch { /* Malformed JSON remains invalid under the ordinary verifier. */ }
@@ -305,6 +311,22 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(401); res.end(); return;
+    }
+    if (supportUtf8Validation && typeof id === 'string' && id.startsWith('wfl_utf8_')) {
+      let validUtf8 = true;
+      try { new TextDecoder('utf-8', { fatal: true }).decode(rawBody); }
+      catch { validUtf8 = false; }
+      if (!validUtf8) {
+        if (unsafeAcceptInvalidUtf8) {
+          processedCount += 1; seen.add(id);
+          res.writeHead(200); res.end('invalid UTF-8 accepted'); return;
+        }
+        if (unsafeCacheInvalidUtf8) seen.add(id);
+        if (unsafeCommitInvalidUtf8BeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(400); res.end('invalid UTF-8 in signed JSON'); return;
+      }
     }
     if (supportMalformedValidation && typeof id === 'string' &&
         id.startsWith('wfl_malformed_')) {

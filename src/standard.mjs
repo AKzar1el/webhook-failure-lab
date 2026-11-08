@@ -14,11 +14,13 @@ export function keyFromSecret(secret) {
 }
 
 export function sign({ secret, id, timestamp, body }) {
-  if (!id || !/^[A-Za-z0-9_-]+$/.test(id) || !Number.isSafeInteger(timestamp) || typeof body !== 'string') {
+  if (!id || !/^[A-Za-z0-9_-]+$/.test(id) || !Number.isSafeInteger(timestamp) ||
+      (typeof body !== 'string' && !Buffer.isBuffer(body))) {
     throw new TypeError('Invalid signed webhook metadata or raw body');
   }
   const digest = createHmac('sha256', keyFromSecret(secret))
-    .update(`${id}.${timestamp}.${body}`, 'utf8')
+    .update(`${id}.${timestamp}.`, 'utf8')
+    .update(body)
     .digest('base64');
   return `v1,${digest}`;
 }
