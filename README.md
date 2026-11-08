@@ -77,6 +77,25 @@ or arbitrary observer-provided strings; the exported count is still solely
 receiver-reported. The CLI does not write files or upload reports; redirect
 stdout to a local artifact file if your CI expects a path.
 
+### Optional chunked UTF-8 signed delivery and replay
+
+Add `"chunkedSignedUtf8Replay": true` to validate a receiver's **HTTP
+chunked-transfer parsing and raw-byte signature verification**. A synthetic
+signed JSON event contains a real three-byte UTF-8 character deliberately
+split across two HTTP request-body writes. The local receiver must assemble
+the full body before UTF-8 decoding and HMAC verification, accept it once,
+and acknowledge the **same signed bytes and event ID** sent again with
+ordinary fixed-length framing without a second reported effect.
+
+Three local negative receivers demonstrate invalid per-chunk text decoding,
+rejection of an otherwise valid chunked request, and deduplication mistakenly
+keyed by HTTP transfer framing. The sender uses only validated HTTP loopback
+destinations, does not follow redirects, and does not expose payloads or keys
+in results. Enable only for a development receiver that declares support for
+chunked request bodies. This probes receiver-reported processing count, not
+external exactly-once side effects; it does not stress-test arbitrary stream
+sizes or network segmentation patterns.
+
 ### Optional signed malformed-body retry check
 
 Add `"rejectMalformedSignedPayload": true` to `lab.json` to detect a

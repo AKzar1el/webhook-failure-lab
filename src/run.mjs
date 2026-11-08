@@ -24,6 +24,30 @@ function postWithDuplicateWireId(endpoint, { id, timestamp, signature, body, sig
   });
 }
 
+function postChunkedSignedUtf8(endpoint, { id, timestamp, signature, body, signal }) {
+  const utf8Start = body.indexOf(Buffer.from('€', 'utf8'));
+  if (utf8Start < 0) throw new Error('Synthetic UTF-8 split marker missing');
+  // Write the first byte of a three-byte character in one HTTP chunk and
+  // the remaining bytes in the next; the HMAC authenticates the whole byte stream.
+  const split = utf8Start + 1;
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'webhook-id': id,
+        'webhook-timestamp': String(timestamp), 'webhook-signature': signature },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode }));
+      response.once('error', reject);
+    });
+    outgoing.once('error', reject);
+    outgoing.write(body.subarray(0, split));
+    setTimeout(() => {
+      if (!outgoing.destroyed) outgoing.end(body.subarray(split));
+    }, 20);
+  });
+}
+
 function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecret) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('Config must be an object');
@@ -105,6 +129,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (rejectDuplicateWireEventIdRetry !== undefined &&
       typeof rejectDuplicateWireEventIdRetry !== 'boolean') {
     throw new TypeError('rejectDuplicateWireEventIdRetry must be a boolean');
+  }
+  const chunkedSignedUtf8Replay = config.chunkedSignedUtf8Replay;
+  if (chunkedSignedUtf8Replay !== undefined && typeof chunkedSignedUtf8Replay !== 'boolean') {
+    throw new TypeError('chunkedSignedUtf8Replay must be a boolean');
   }
   const rejectInvalidUtf8Retry = config.rejectInvalidUtf8Retry;
   if (rejectInvalidUtf8Retry !== undefined && typeof rejectInvalidUtf8Retry !== 'boolean') {
@@ -268,7 +296,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectMissingTimestampRetry,
-    rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry, rejectInvalidUtf8Retry,
+    rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry, chunkedSignedUtf8Replay,
+    rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterCommittedError, lostAckAfterCommit, timeoutAfterCommit,
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
@@ -348,6 +377,31 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
   await deliver('tampered_body', tamperId, body + ' ', body, now, false, 0);
   const staleId = `wfl_${randomUUID().replaceAll('-', '')}`;
   await deliver('stale_timestamp', staleId, body, body, now - 3600, false, 0);
+
+  if (options.chunkedSignedUtf8Replay) {
+    const chunkedId = `wfl_chunked_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = Buffer.from(JSON.stringify({ type: 'test.created',
+      data: { id: chunkedId, note: '€' } }), 'utf8');
+    const signature = sign({ secret, id: chunkedId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': chunkedId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const first = await postChunkedSignedUtf8(options.endpoint,
+      { id: chunkedId, timestamp: now, signature, body: rawBody, signal: timeout() });
+    const afterChunked = await observe();
+    // Same authenticated bytes and ID with ordinary fixed-length HTTP framing.
+    const replay = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, replay.status];
+    const observedCounts = [afterChunked, afterReplay];
+    reports.push({ scenario: 'chunked_utf8_signed_replay',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
 
   if (config.rejectMalformedSignedPayload) {
     const malformedId = `wfl_malformed_${randomUUID().replaceAll('-', '')}`;
