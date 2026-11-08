@@ -256,6 +256,25 @@ contract assumes the provider treats webhook IDs as case-sensitive opaque
 strings; do not enable it for an integration that explicitly normalizes IDs.
 Passing proves only receiver-reported counts, not external exactly-once effects.
 
+### Optional prototype-property webhook ID check
+
+Add `"prototypePropertyEventIds": true` to `lab.json` to expose an
+idempotency cache implemented using an ordinary JavaScript object rather than
+a `Set`, `Map`, or prototype-free dictionary. The lab signs two separate
+synthetic deliveries with the literal webhook IDs `__proto__` and
+`constructor`, then replays both with unchanged HMACs. A receiver declaring
+this opt-in opaque-ID contract must accept each new authenticated ID once,
+accept both retries, and report exactly two new effects.
+
+Three broken localhost receivers demonstrate inherited object properties
+incorrectly treated as already processed, a `__proto__` setter that does not
+persist an own dedupe key and therefore reprocesses retries, and blanket 409
+rejection of these IDs. The lab uses synthetic signing keys and tests
+receiver-reported counters only; it does **not** execute injected code or claim
+external exactly-once business effects. Some providers constrain their ID
+character set: enable this test only when the receiver explicitly supports
+arbitrary opaque string IDs. The option is off by default.
+
 ### Optional distinct event IDs targeting one resource
 
 Add `"distinctEventsSameResource": true` to `lab.json` to catch receivers that

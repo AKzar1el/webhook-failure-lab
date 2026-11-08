@@ -249,6 +249,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (caseSensitiveEventIds !== undefined && typeof caseSensitiveEventIds !== 'boolean') {
     throw new TypeError('caseSensitiveEventIds must be a boolean');
   }
+  const prototypePropertyEventIds = config.prototypePropertyEventIds;
+  if (prototypePropertyEventIds !== undefined && typeof prototypePropertyEventIds !== 'boolean') {
+    throw new TypeError('prototypePropertyEventIds must be a boolean');
+  }
   const distinctEventsSameResource = config.distinctEventsSameResource;
   if (distinctEventsSameResource !== undefined && typeof distinctEventsSameResource !== 'boolean') {
     throw new TypeError('distinctEventsSameResource must be a boolean');
@@ -432,6 +436,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
     concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
+    prototypePropertyEventIds,
     distinctEventsSameResource, distinctIdsIdenticalBody,
     tenantScopedEventIds,
     rejectFutureSignedTimestamp, rejectFutureDuplicateSignature, rejectNoncanonicalTimestamp,
@@ -1962,6 +1967,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const expectedCounts = [expectedCount + 1, expectedCount + 2,
       expectedCount + 2, expectedCount + 2];
     reports.push({ scenario: 'case_sensitive_event_ids',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count, index) => count === expectedCounts[index]),
+      httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
+  }
+
+  if (options.prototypePropertyEventIds) {
+    // Exact object-prototype names expose JavaScript object-backed dedupe maps.
+    // This opt-in contract requires receivers to accept these signed ID values.
+    const ids = ['__proto__', 'constructor'];
+    const messages = ids.map((eventId) => {
+      const rawBody = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(),
+        data: { id: `wfl_property_payload_${randomUUID().replaceAll('-', '')}` } });
+      return { eventId, rawBody,
+        signature: sign({ secret, id: eventId, timestamp: now, body: rawBody }) };
+    });
+    const httpStatuses = [];
+    const observedCounts = [];
+    for (const message of [...messages, ...messages]) {
+      const response = await request(options.endpoint, {
+        method: 'POST', redirect: 'manual', signal: timeout(),
+        headers: { 'content-type': 'application/json',
+          'webhook-id': message.eventId, 'webhook-timestamp': String(now),
+          'webhook-signature': message.signature },
+        body: message.rawBody,
+      });
+      httpStatuses.push(response.status);
+      observedCounts.push(await observe());
+    }
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'prototype_property_event_ids',
       passed: httpStatuses.every((status) => status === options.successStatus) &&
         observedCounts.every((count, index) => count === expectedCounts[index]),
       httpStatuses, observedCounts, expectedProcessedCount: expectedCount + 2 });

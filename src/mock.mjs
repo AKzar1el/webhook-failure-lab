@@ -67,6 +67,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
   unsafeCaseFoldEventIds = false, unsafeRejectCaseVariantEventId = false,
+  unsafeInheritedEventIdCache = false, unsafePrototypeSetterEventIdCache = false,
+  unsafeRejectPrototypeEventIds = false,
   unsafeDedupeByResourceId = false, unsafeRejectSecondResourceEvent = false,
   unsafeReprocessSharedResourceReplays = false,
   unsafeDedupeByBodyHash = false, unsafeRejectIdenticalBodyAsCollision = false,
@@ -96,6 +98,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
   const caseFoldedIds = new Map();
+  const prototypeBackedDedupe = {};
   const sharedResourceFirstEvent = new Map();
   const identicalBodyFirstEvent = new Map();
   const tenantScopedIds = new Set();
@@ -603,6 +606,25 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       if (!seen.has(id)) {
         identicalBodyFirstEvent.set(body, id);
         seen.add(id);
+        processedCount += 1;
+      }
+      res.writeHead(200); res.end('accepted'); return;
+    }
+    if ((id === '__proto__' || id === 'constructor') &&
+        (unsafeInheritedEventIdCache || unsafePrototypeSetterEventIdCache ||
+          unsafeRejectPrototypeEventIds)) {
+      if (unsafeRejectPrototypeEventIds) {
+        res.writeHead(409); res.end('object-property ID rejected'); return;
+      }
+      if (unsafeInheritedEventIdCache) {
+        // Inherited Object.prototype names incorrectly look like cached IDs.
+        if (!prototypeBackedDedupe[id]) {
+          prototypeBackedDedupe[id] = true;
+          processedCount += 1;
+        }
+      } else if (!Object.hasOwn(prototypeBackedDedupe, id)) {
+        // __proto__ assignment changes the cache's prototype, not its own keys.
+        prototypeBackedDedupe[id] = { delivered: true };
         processedCount += 1;
       }
       res.writeHead(200); res.end('accepted'); return;
