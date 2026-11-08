@@ -586,6 +586,20 @@ recovery after an **unauthenticated first delivery**. No external endpoints,
 production keys or real retry scheduling are used. Receiver-reported counts
 do not establish unobserved business-side-effect guarantees.
 
+### Opt-in retry after missing signature header
+
+Set `"rejectMissingSignatureRetry": true` in local `lab.json` to require a
+receiver to reject an event that has a valid synthetic ID, timestamp and JSON
+body but **no `webhook-signature` header**. The first response must be a
+configured 4xx without an observed effect or reserved deduplication ID. The
+harness then sends the exact same body and ID with a valid HMAC, followed by
+an identical signed replay. Both signed deliveries must be acknowledged with
+only one new observed effect. Negative localhost fixtures catch acceptance
+without a signature, ID poisoning on rejection and rejection after a commit.
+Unlike the invalid-HMAC retry, this checks *absent* authentication metadata.
+This is an opt-in local adapter contract, not proof of a provider's redelivery
+policy or unseen external side effects.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.

@@ -19,6 +19,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcknowledgeRawJsonBeforeAuth = false, unsafeCommitRawJsonBeforeReject = false,
   unsafeCacheRejectedSignature = false, unsafeCommitRejectedSignature = false,
   unsafeAcceptRejectedSignature = false,
+  unsafeAcceptMissingSignature = false, unsafeCacheMissingSignature = false,
+  unsafeCommitMissingSignatureBeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
   unsafeMarkFailedRetrySeen = false, supportLostAckFault = true,
   unsafeForgetLostAckDedupe = false, supportOrderTransitions = true,
@@ -205,6 +207,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       : acceptedCurrent || acceptedPrevious || (unsafeAcceptRetiredSecret && signedByRetired) ||
         (unsafeAcceptRejectedSignature && typeof id === 'string' &&
           id.startsWith('wfl_authretry_')) ||
+        (unsafeAcceptMissingSignature && typeof id === 'string' &&
+          id.startsWith('wfl_missinghmac_') && signature === undefined) ||
         (unsafeAcceptInvalidMultiSignature && typeof id === 'string' &&
           id.startsWith('wfl_multisig_reject_'));
     if (verifySignatures && !accepted) {
@@ -214,6 +218,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       if (typeof id === 'string' && id.startsWith('wfl_authretry_')) {
         if (unsafeCacheRejectedSignature) seen.add(id);
         if (unsafeCommitRejectedSignature) {
+          processedCount += 1;
+          seen.add(id);
+        }
+      }
+      if (typeof id === 'string' && id.startsWith('wfl_missinghmac_') &&
+          signature === undefined) {
+        if (unsafeCacheMissingSignature) seen.add(id);
+        if (unsafeCommitMissingSignatureBeforeReject) {
           processedCount += 1;
           seen.add(id);
         }
