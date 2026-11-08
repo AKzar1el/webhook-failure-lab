@@ -33,6 +33,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitMissingEventIdBeforeReject = false,
   unsafeAcceptDuplicateWireEventId = false, unsafeCacheDuplicateWireEventId = false,
   unsafeCommitDuplicateWireEventIdBeforeReject = false,
+  unsafeDecodeChunkSeparately = false, unsafeRejectChunkedTransfer = false,
+  unsafeDedupeByTransferFraming = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
   unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -68,6 +70,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitStaleVersionBeforeReject = false } = {}) {
   const seen = new Set();
   const seenCharsetKeys = new Set();
+  const seenTransferKeys = new Set();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
@@ -220,6 +223,11 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       catch { authenticatedId = undefined; }
     }
     let authenticatedBody = rawBody;
+    if (unsafeDecodeChunkSeparately && typeof id === 'string' &&
+        id.startsWith('wfl_chunked_') && req.headers['transfer-encoding'] === 'chunked') {
+      // Broken stream decoder inserts replacement characters at chunk boundaries.
+      authenticatedBody = Buffer.from(chunks.map((chunk) => chunk.toString('utf8')).join(''));
+    }
     if (unsafeCanonicalizeRawJsonBeforeVerify && rawJsonProbe) {
       try { authenticatedBody = JSON.stringify(JSON.parse(body)); }
       catch { /* Malformed JSON remains invalid under the ordinary verifier. */ }
@@ -437,6 +445,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       }
       res.writeHead(415); res.end('unsupported content encoding'); return;
     }
+    if (unsafeRejectChunkedTransfer && typeof id === 'string' &&
+        id.startsWith('wfl_chunked_') && req.headers['transfer-encoding'] === 'chunked') {
+      res.writeHead(415); res.end('signed HTTP chunked body rejected'); return;
+    }
     if (tenantProbe && supportTenantScopes) {
       const priorOwner = tenantGlobalOwners.get(id);
       if ((unsafeGlobalTenantDedupe || unsafeRejectTenantCollision) && priorOwner !== undefined) {
@@ -627,6 +639,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       } else if (!seen.has(id)) {
         processedCount += 1;
         seen.add(id);
+      }
+      res.writeHead(200); res.end('accepted'); return;
+    }
+    if (unsafeDedupeByTransferFraming && typeof id === 'string' && id.startsWith('wfl_chunked_')) {
+      const badKey = `${id}:${req.headers['transfer-encoding'] === 'chunked' ? 'chunked' : 'fixed'}`;
+      if (!seenTransferKeys.has(badKey)) {
+        seenTransferKeys.add(badKey);
+        processedCount += 1;
       }
       res.writeHead(200); res.end('accepted'); return;
     }
