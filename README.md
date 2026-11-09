@@ -77,6 +77,20 @@ or arbitrary observer-provided strings; the exported count is still solely
 receiver-reported. The CLI does not write files or upload reports; redirect
 stdout to a local artifact file if your CI expects a path.
 
+### Optional mixed-case webhook header replay
+
+Add `"mixedCaseWebhookHeaders": true` to send one valid signed JSON event
+with mixed-case physical `webhook-id`, `webhook-timestamp`, and
+`webhook-signature` field names, then replay its identical signed bytes
+using lowercase names. Both deliveries must succeed with one reported
+effect. Negative local fixtures expose header-name case-sensitive parsers,
+dedupe keys improperly tied to the original field-name spelling, and
+incorrect 409 responses for a valid replay.
+
+HTTP field names are case-insensitive; the values and HMAC remain unchanged.
+This opt-in check uses a raw loopback-only Node HTTP sender without redirects.
+It does not assert provider-specific casing or external exactly-once effects.
+
 ### Optional chunked UTF-8 signed delivery and replay
 
 Add `"chunkedSignedUtf8Replay": true` to validate a receiver's **HTTP
