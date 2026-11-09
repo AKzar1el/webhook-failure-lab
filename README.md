@@ -77,6 +77,25 @@ or arbitrary observer-provided strings; the exported count is still solely
 receiver-reported. The CLI does not write files or upload reports; redirect
 stdout to a local artifact file if your CI expects a path.
 
+### Optional HTTP keep-alive connection isolation and cross-connection replay
+
+Add `"keepAliveConnectionIsolation": true` to verify that a receiver handles
+**two independently signed events on the same HTTP/1.1 keep-alive connection**
+without merging or rejecting the second event. The harness replays the first
+event on that same socket, then replays the second event using a **new TCP
+connection**. All four deliveries must return `successStatus`; the local
+`processedCount` observer should increment for only the two unique IDs.
+The report includes `sameSocketReused` and `freshSocketUsed` booleans so a
+pass cannot be inferred when connection pooling behaves differently.
+
+Four deliberately broken loopback receivers demonstrate per-connection
+event coalescing, false 409 rejection, deduplication scoped only to a socket,
+and duplicate processing on a reused connection. This tests the receiver's
+request isolation and reported counts, **not** durable idempotency across
+process restarts or unseen external side effects. The raw Node HTTP sender
+validates the loopback-only target, does not follow redirects, and uses
+synthetic HMAC signing keys. Keep-alive support is an opt-in receiver contract.
+
 ### Optional mixed-case webhook header replay
 
 Add `"mixedCaseWebhookHeaders": true` to send one valid signed JSON event
@@ -187,6 +206,24 @@ The mock recognizes these narrowly constructed fixtures; a tested receiver
 must implement its own robust JSON validation. The count is caller-reported
 and cannot prove hidden business effects.
 
+### Optional nested duplicate resource-ID rejection and retry
+
+Add `"rejectDuplicateNestedResourceId": true` for a strict local JSON
+policy that rejects ambiguous **nested `data.id` fields**. The lab
+signs two otherwise valid JSON envelopes with the same delivery ID: one has
+conflicting literal `"id"` keys inside `data`; the other
+escapes the second key as `"i\u0064"`. Both must receive HTTP **422**
+without reserving the signed delivery ID or recording an effect. A separately
+signed, corrected single-ID body must then process once; its exact replay
+must not increment the observed count.
+
+Broken loopback receivers deliberately accept either duplicate-key shape,
+poison the dedupe cache on rejection, or commit before returning 422. This is
+an **opt-in synthetic receiver contract**, not a requirement of Standard
+Webhooks, a generic JSON duplicate-key scanner, or evidence about a provider's
+retry policy. The mock only recognizes the two constructed shapes; a real
+receiver needs an actual duplicate-aware parser. Counts remain receiver-reported.
+
 ### Optional wrong media-type retry check
 
 Add `"rejectWrongContentTypeRetry": true` to require **HTTP 415** for a
@@ -202,6 +239,24 @@ body is valid JSON throughout; only the unsigned content type changes.
 Enable this opt-in contract only for a local receiver that explicitly
 requires JSON media type; some webhook providers legitimately use other
 content types. No provider behavior or unobserved business effects are proven.
+
+### Optional HTTP method rejection and signed POST retry
+
+Add `"rejectWrongHttpMethodRetry": true` to test a **local-only POST-only
+webhook route**. The harness sends a correctly HMAC-signed synthetic JSON
+event using HTTP `PUT`. A receiver honoring this explicit contract must
+respond `405 Method Not Allowed` with `Allow: POST`, without recording
+an effect or reserving the event ID. A subsequent `POST` of the **identical
+signed ID, timestamp and raw bytes** must process once; the exact signed
+POST replay must deduplicate. HTTP method is not authenticated by this
+signature, but it is part of the receiver's routing/authorization policy.
+
+Negative loopback receivers deliberately process PUT, reserve its rejected
+event ID, commit before returning 405, or omit the required Allow header.
+This is not a universal webhook-provider method policy: opt in only if
+your local receiver explicitly promises POST-only handling and 405.
+Only the caller-reported processed count is observed; this does not prove
+external exactly-once business effects.
 
 ### Optional unsupported Content-Encoding rejection and retry
 

@@ -16,11 +16,17 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportDuplicateDataValidation = true, unsafeAcceptDuplicateDataKey = false,
   unsafeAcceptEscapedDuplicateDataKey = false,
   unsafePoisonDuplicateDataDedupe = false, unsafeCommitDuplicateDataBeforeReject = false,
+  supportNestedResourceIdValidation = true, unsafeAcceptDuplicateNestedId = false,
+  unsafeAcceptEscapedDuplicateNestedId = false,
+  unsafePoisonNestedIdDedupe = false, unsafeCommitNestedIdBeforeReject = false,
   supportPayloadSizeValidation = true, unsafeAcceptOversizedSignedPayload = false,
   unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
+  supportHttpMethodValidation = true, unsafeAcceptWrongHttpMethod = false,
+  unsafePoisonWrongMethodDedupe = false,
+  unsafeCommitWrongMethodBeforeReject = false, unsafeOmitWrongMethodAllow = false,
   supportContentEncodingValidation = true, unsafeAcceptUnsupportedContentEncoding = false,
   unsafePoisonUnsupportedEncodingDedupe = false,
   unsafeCommitUnsupportedEncodingBeforeReject = false,
@@ -57,6 +63,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeDedupeByTransferFraming = false,
   unsafeRejectMixedCaseWebhookHeaders = false, unsafeDedupeByHeaderSpelling = false,
   unsafeRejectLowercaseHeaderReplay = false,
+  unsafeCoalesceKeepAliveEvents = false, unsafeRejectNextKeepAliveEvent = false,
+  unsafeConnectionScopedDedupe = false, unsafeReprocessKeepAliveReplay = false,
   unsafeReserveTruncatedUploadId = false, unsafeCommitTruncatedUpload = false,
   unsafeReserveAbortedChunkId = false, unsafeCommitAbortedChunk = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
@@ -104,6 +112,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const seenCharsetKeys = new Set();
   const seenTransferKeys = new Set();
   const seenHeaderSpellings = new Set();
+  const firstKeepAliveEventBySocket = new WeakMap();
+  const keepAliveIdsBySocket = new WeakMap();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
@@ -153,7 +163,17 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           ? { resourceVersion: resourceVersions.get(resourceId) ?? 0 } : {}) }));
       return;
     }
-    if (req.method !== 'POST' || url.pathname !== '/webhook') {
+    const wrongMethodProbe = req.method === 'PUT' && url.pathname === '/webhook' &&
+      typeof req.headers['webhook-id'] === 'string' &&
+      req.headers['webhook-id'].startsWith('wfl_method_');
+    if (wrongMethodProbe && supportHttpMethodValidation && !unsafeAcceptWrongHttpMethod) {
+      const id = req.headers['webhook-id'];
+      if (unsafePoisonWrongMethodDedupe || unsafeCommitWrongMethodBeforeReject) seen.add(id);
+      if (unsafeCommitWrongMethodBeforeReject) processedCount += 1;
+      res.writeHead(405, unsafeOmitWrongMethodAllow ? {} : { Allow: 'POST' });
+      res.end('method not allowed'); return;
+    }
+    if ((req.method !== 'POST' && !wrongMethodProbe) || url.pathname !== '/webhook') {
       res.writeHead(404); res.end(); return;
     }
     const chunks = [];
@@ -562,6 +582,20 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         res.writeHead(422); res.end('duplicate synthetic data property'); return;
       }
     }
+    if (supportNestedResourceIdValidation && typeof id === 'string' &&
+        id.startsWith('wfl_nestedid_')) {
+      // Deliberately narrow fixtures, not a general duplicate JSON property parser.
+      const literalDuplicate = /"data"\s*:\s*\{\s*"id"\s*:\s*"[^"]*"\s*,\s*"id"\s*:/.test(body);
+      const escapedDuplicate = /"data"\s*:\s*\{\s*"id"\s*:\s*"[^"]*"\s*,\s*"i\\u0064"\s*:/.test(body);
+      if ((literalDuplicate && !unsafeAcceptDuplicateNestedId) ||
+          (escapedDuplicate && !unsafeAcceptEscapedDuplicateNestedId)) {
+        if (unsafePoisonNestedIdDedupe) seen.add(id);
+        if (unsafeCommitNestedIdBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(422); res.end('ambiguous nested synthetic resource ID'); return;
+      }
+    }
     if (supportPayloadSizeValidation && typeof id === 'string' &&
         id.startsWith('wfl_oversize_') && Buffer.byteLength(body, 'utf8') > 1024) {
       if (unsafeAcceptOversizedSignedPayload) {
@@ -915,6 +949,31 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         }
       }
       res.writeHead(202); res.end('synthetic queued acknowledgement'); return;
+    }
+    if (typeof id === 'string' && id.startsWith('wfl_keepalive_')) {
+      if (unsafeConnectionScopedDedupe) {
+        let socketIds = keepAliveIdsBySocket.get(req.socket);
+        if (!socketIds) {
+          socketIds = new Set();
+          keepAliveIdsBySocket.set(req.socket, socketIds);
+        }
+        if (!socketIds.has(id)) {
+          socketIds.add(id);
+          processedCount += 1;
+        }
+        res.writeHead(200); res.end('connection-scoped idempotency'); return;
+      }
+      const firstOnSocket = firstKeepAliveEventBySocket.get(req.socket);
+      if (!firstOnSocket) firstKeepAliveEventBySocket.set(req.socket, id);
+      if (firstOnSocket && firstOnSocket !== id &&
+          (unsafeCoalesceKeepAliveEvents || unsafeRejectNextKeepAliveEvent)) {
+        res.writeHead(unsafeRejectNextKeepAliveEvent ? 409 : 200);
+        res.end('wrongly reused previous connection state'); return;
+      }
+      if (unsafeReprocessKeepAliveReplay && firstOnSocket === id && seen.has(id)) {
+        processedCount += 1;
+        res.writeHead(200); res.end('reprocessed cached request'); return;
+      }
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {

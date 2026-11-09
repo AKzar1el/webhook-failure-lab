@@ -81,6 +81,31 @@ test('chunked and Content-Length abort probes use independent authenticated IDs'
   });
 });
 
+test('aborted chunked upload and keep-alive replay probes preserve independent effect counts', async () => {
+  await withReceiver({}, async (config) => {
+    const result = await runLab({ ...config, abortedChunkedUploadRetry: true,
+      keepAliveConnectionIsolation: true }, { secret });
+    assert.equal(result.success, true);
+    assert.deepEqual(result.scenarios.slice(-2).map(({ scenario }) => scenario),
+      ['aborted_chunked_upload_retry', 'keep_alive_connection_isolation']);
+    assert.deepEqual(result.scenarios.at(-2).observedCounts, [1, 2, 2]);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [3, 4, 4, 4]);
+    assert.equal(result.scenarios.at(-1).sameSocketReused, true);
+    assert.equal(result.scenarios.at(-1).freshSocketUsed, true);
+  });
+});
+
+test('connection-scoped dedupe still fails after a successful aborted-chunked retry', async () => {
+  await withReceiver({ unsafeConnectionScopedDedupe: true }, async (config) => {
+    const result = await runLab({ ...config, abortedChunkedUploadRetry: true,
+      keepAliveConnectionIsolation: true }, { secret });
+    assert.equal(result.success, false);
+    assert.equal(result.scenarios.at(-2).passed, true);
+    assert.equal(result.scenarios.at(-1).passed, false);
+    assert.deepEqual(result.scenarios.at(-1).observedCounts, [3, 4, 4, 5]);
+  });
+});
+
 test('CLI outputs chunked-abort result without secret or signed raw body', async () => {
   await withReceiver({}, async (config) => {
     const directory = await mkdtemp(join(tmpdir(), 'wfl-abort-chunk-'));

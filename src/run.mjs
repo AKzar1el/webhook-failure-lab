@@ -1,9 +1,28 @@
 import { randomUUID } from 'node:crypto';
-import { request as httpRequest } from 'node:http';
+import { Agent as HttpAgent, request as httpRequest } from 'node:http';
 import { requireLoopbackUrl } from './loopback.mjs';
 import { keyFromSecret, sign } from './standard.mjs';
 
 const DEFAULT_TIMEOUT_MS = 3000;
+
+function postOnKeepAliveAgent(endpoint, { id, timestamp, signature, body, signal }, agent) {
+  // A dedicated Node agent allows us to prove actual socket reuse, unlike fetch pooling.
+  return new Promise((resolve, reject) => {
+    let socket;
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', agent, signal,
+      headers: { 'content-type': 'application/json', 'webhook-id': id,
+        'webhook-timestamp': String(timestamp), 'webhook-signature': signature },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode, socket }));
+      response.once('error', reject);
+    });
+    outgoing.once('socket', (value) => { socket = value; });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
 
 function postWithMixedCaseWebhookHeaders(endpoint, { id, timestamp, signature, body, signal }) {
   // The raw Node client preserves field-name spelling; fetch canonicalizes it.
@@ -262,6 +281,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectWrongContentTypeRetry !== 'boolean') {
     throw new TypeError('rejectWrongContentTypeRetry must be a boolean');
   }
+  const rejectWrongHttpMethodRetry = config.rejectWrongHttpMethodRetry;
+  if (rejectWrongHttpMethodRetry !== undefined &&
+      typeof rejectWrongHttpMethodRetry !== 'boolean') {
+    throw new TypeError('rejectWrongHttpMethodRetry must be a boolean');
+  }
   const rejectUnsupportedContentEncodingRetry = config.rejectUnsupportedContentEncodingRetry;
   if (rejectUnsupportedContentEncodingRetry !== undefined &&
       typeof rejectUnsupportedContentEncodingRetry !== 'boolean') {
@@ -285,6 +309,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (rejectDuplicateJsonDataKey !== undefined &&
       typeof rejectDuplicateJsonDataKey !== 'boolean') {
     throw new TypeError('rejectDuplicateJsonDataKey must be a boolean');
+  }
+  const rejectDuplicateNestedResourceId = config.rejectDuplicateNestedResourceId;
+  if (rejectDuplicateNestedResourceId !== undefined &&
+      typeof rejectDuplicateNestedResourceId !== 'boolean') {
+    throw new TypeError('rejectDuplicateNestedResourceId must be a boolean');
   }
   const rejectOversizedSignedPayload = config.rejectOversizedSignedPayload;
   if (rejectOversizedSignedPayload !== undefined &&
@@ -348,6 +377,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   const mixedCaseWebhookHeaders = config.mixedCaseWebhookHeaders;
   if (mixedCaseWebhookHeaders !== undefined && typeof mixedCaseWebhookHeaders !== 'boolean') {
     throw new TypeError('mixedCaseWebhookHeaders must be a boolean');
+  }
+  const keepAliveConnectionIsolation = config.keepAliveConnectionIsolation;
+  if (keepAliveConnectionIsolation !== undefined &&
+      typeof keepAliveConnectionIsolation !== 'boolean') {
+    throw new TypeError('keepAliveConnectionIsolation must be a boolean');
   }
   const partialBodyUploadAbort = config.partialBodyUploadAbort;
   if (partialBodyUploadAbort !== undefined && typeof partialBodyUploadAbort !== 'boolean') {
@@ -536,16 +570,18 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     asyncAckDelivery, asyncAckWaitMs,
-    rejectWrongContentTypeRetry, rejectUnsupportedContentEncodingRetry,
+    rejectWrongContentTypeRetry, rejectWrongHttpMethodRetry,
+    rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
-    rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
+    rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey,
+    rejectDuplicateNestedResourceId, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectUnsupportedSignatureVersion,
     rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
     rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
-    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, partialBodyUploadAbort,
-    abortedChunkedUploadRetry,
+    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, keepAliveConnectionIsolation,
+    partialBodyUploadAbort, abortedChunkedUploadRetry,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
@@ -742,6 +778,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     expectedCount = expectedProcessedCount;
   }
 
+  if (options.rejectWrongHttpMethodRetry) {
+    const methodId = `wfl_method_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: methodId } });
+    const signature = sign({ secret, id: methodId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': methodId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const send = (method) => request(options.endpoint, {
+      method, redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    // The method is not signed. A rejected method must neither commit nor reserve this ID.
+    const wrongMethod = await send('PUT');
+    const afterWrongMethod = await observe();
+    const corrected = await send('POST');
+    const afterCorrected = await observe();
+    const replay = await send('POST');
+    const afterReplay = await observe();
+    const allowPost = wrongMethod.headers?.get?.('allow')?.split(',')
+      .some((method) => method.trim().toUpperCase() === 'POST') ?? false;
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [wrongMethod.status, corrected.status, replay.status];
+    const observedCounts = [afterWrongMethod, afterCorrected, afterReplay];
+    reports.push({ scenario: 'wrong_http_method_retry',
+      passed: httpStatuses[0] === 405 && allowPost &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, allowPost, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
   if (options.rejectUnsupportedContentEncodingRetry) {
     const encodingId = `wfl_encoding_${randomUUID().replaceAll('-', '')}`;
     const rawBody = JSON.stringify({ type: 'test.created',
@@ -903,6 +972,45 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     reports.push({ scenario: 'duplicate_json_data_key_retry',
       passed: httpStatuses[0] === 422 &&
         httpStatuses[1] === 422 &&
+        httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectDuplicateNestedResourceId) {
+    const eventId = `wfl_nestedid_${randomUUID().replaceAll('-', '')}`;
+    const timestamp = new Date(now * 1000).toISOString();
+    const prefix = '{"type":"test.created","timestamp":' + JSON.stringify(timestamp) +
+      ',"data":{"id":' + JSON.stringify('wfl_untrusted_resource_' + eventId);
+    // Both bodies authenticate but give conflicting logical data.id values.
+    const literalDuplicate = prefix + ',"id":' + JSON.stringify(eventId) + '}}';
+    const escapedDuplicate = prefix + ',"i\\u0064":' + JSON.stringify(eventId) + '}}';
+    const corrected = JSON.stringify({ type: 'test.created', timestamp, data: { id: eventId } });
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: eventId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    const first = await send(literalDuplicate);
+    const afterFirst = await observe();
+    const escaped = await send(escapedDuplicate);
+    const afterEscaped = await observe();
+    const valid = await send(corrected);
+    const afterValid = await observe();
+    const replay = await send(corrected);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, escaped.status, valid.status, replay.status];
+    const observedCounts = [afterFirst, afterEscaped, afterValid, afterReplay];
+    reports.push({ scenario: 'duplicate_nested_resource_id_retry',
+      passed: httpStatuses[0] === 422 && httpStatuses[1] === 422 &&
         httpStatuses[2] === options.successStatus &&
         httpStatuses[3] === options.successStatus &&
         observedCounts[0] === expectedCount &&
@@ -2518,6 +2626,55 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[2] === expectedProcessedCount,
       firstAttemptOutcome, httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
+  }
+
+  if (options.keepAliveConnectionIsolation) {
+    const eventRoot = `wfl_keepalive_${randomUUID().replaceAll('-', '')}`;
+    const events = ['one', 'two'].map((suffix) => {
+      const eventId = `${eventRoot}_${suffix}`;
+      const body = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+      return { id: eventId, timestamp: now, body,
+        signature: sign({ secret, id: eventId, timestamp: now, body }) };
+    });
+    const originalAgent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    const freshAgent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    let responses;
+    try {
+      // Three sequential requests must share a socket; the fourth uses a new one.
+      const first = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[0], signal: timeout() }, originalAgent);
+      const countFirst = await observe();
+      const second = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[1], signal: timeout() }, originalAgent);
+      const countSecond = await observe();
+      const sameSocketReplay = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[0], signal: timeout() }, originalAgent);
+      const countReplay = await observe();
+      const freshSocketReplay = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[1], signal: timeout() }, freshAgent);
+      const countFresh = await observe();
+      responses = {
+        httpStatuses: [first.status, second.status,
+          sameSocketReplay.status, freshSocketReplay.status],
+        observedCounts: [countFirst, countSecond, countReplay, countFresh],
+        sameSocketReused: !!first.socket && first.socket === second.socket &&
+          first.socket === sameSocketReplay.socket,
+        freshSocketUsed: !!freshSocketReplay.socket &&
+          freshSocketReplay.socket !== first.socket,
+      };
+    } finally {
+      originalAgent.destroy();
+      freshAgent.destroy();
+    }
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'keep_alive_connection_isolation',
+      passed: responses.sameSocketReused && responses.freshSocketUsed &&
+        responses.httpStatuses.every((status) => status === options.successStatus) &&
+        responses.observedCounts.every((count, index) => count === expectedCounts[index]),
+      ...responses, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,
