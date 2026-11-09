@@ -5,6 +5,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
   unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
+  supportAsyncAck = true, unsafeAsyncAckDropJob = false,
+  unsafeAsyncAckDoubleCommit = false, unsafeAsyncAckNoReservation = false,
   supportRateLimitFault = true, unsafeReserveRateLimitedId = false,
   unsafeCommitRateLimitedBeforeReject = false, unsafeOmitRateLimitRetryAfter = false,
   supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
@@ -56,6 +58,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCommitDuplicateContentEncodingBeforeReject = false,
   unsafeDecodeChunkSeparately = false, unsafeRejectChunkedTransfer = false,
   unsafeDedupeByTransferFraming = false,
+  unsafeRejectMixedCaseWebhookHeaders = false, unsafeDedupeByHeaderSpelling = false,
+  unsafeRejectLowercaseHeaderReplay = false,
+  unsafeReserveTruncatedUploadId = false, unsafeCommitTruncatedUpload = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
   unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -100,6 +105,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const seen = new Set();
   const seenCharsetKeys = new Set();
   const seenTransferKeys = new Set();
+  const seenHeaderSpellings = new Set();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
@@ -154,10 +160,23 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     }
     const chunks = [];
     let bodyBytes = 0;
-    for await (const chunk of req) {
-      bodyBytes += chunk.length;
-      if (bodyBytes > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
-      chunks.push(chunk);
+    try {
+      for await (const chunk of req) {
+        bodyBytes += chunk.length;
+        if (bodyBytes > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      if (req.complete) throw error;
+      const abortedId = req.headers['webhook-id'];
+      if (typeof abortedId === 'string' && abortedId.startsWith('wfl_partialupload_')) {
+        // Deliberately broken receivers trust an incomplete body's unauthenticated
+        // ID and reserve/commit before all signed bytes have been received.
+        if (unsafeReserveTruncatedUploadId || unsafeCommitTruncatedUpload) seen.add(abortedId);
+        if (unsafeCommitTruncatedUpload) processedCount += 1;
+      }
+      res.destroy();
+      return;
     }
     const rawBody = Buffer.concat(chunks);
     const body = rawBody.toString('utf8');
@@ -166,7 +185,11 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     const wireSignatures = [];
     const wireContentTypes = [];
     const wireContentEncodings = [];
+    const wireWebhookHeaderNames = [];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase().startsWith('webhook-')) {
+        wireWebhookHeaderNames.push(req.rawHeaders[i]);
+      }
       if (req.rawHeaders[i].toLowerCase() === 'content-type') {
         wireContentTypes.push(req.rawHeaders[i + 1]);
       }
@@ -195,6 +218,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       typeof id === 'string' && id.startsWith('wfl_dupctype_');
     const duplicateWireContentEncoding = wireContentEncodings.length > 1 &&
       typeof id === 'string' && id.startsWith('wfl_dupencoding_');
+    const headerCaseProbe = typeof id === 'string' && id.startsWith('wfl_headercase_');
+    const mixedWebhookHeaders = wireWebhookHeaderNames.some((name) => name !== name.toLowerCase());
     let missingEventBodyId;
     if (id === undefined) {
       try {
@@ -871,6 +896,34 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1;
       }
       res.writeHead(200); res.end('accepted'); return;
+    }
+    if (headerCaseProbe) {
+      if (unsafeRejectMixedCaseWebhookHeaders && mixedWebhookHeaders) {
+        res.writeHead(401); res.end('wrongly treated mixed-case fields as missing'); return;
+      }
+      if (unsafeRejectLowercaseHeaderReplay && !mixedWebhookHeaders && seen.has(id)) {
+        res.writeHead(409); res.end('wrongly classified casing-only replay as conflict'); return;
+      }
+      if (unsafeDedupeByHeaderSpelling) {
+        const badKey = `${id}:${wireWebhookHeaderNames.join('|')}`;
+        if (!seenHeaderSpellings.has(badKey)) {
+          seenHeaderSpellings.add(badKey);
+          processedCount += 1;
+        }
+        res.writeHead(200); res.end('accepted'); return;
+      }
+    }
+    if (supportAsyncAck && typeof id === 'string' && id.startsWith('wfl_asyncack_')) {
+      if (!seen.has(id)) {
+        // In-memory synthetic queue, not a durable job system.
+        if (!unsafeAsyncAckNoReservation) seen.add(id);
+        if (!unsafeAsyncAckDropJob) {
+          setTimeout(() => {
+            processedCount += unsafeAsyncAckDoubleCommit ? 2 : 1;
+          }, 35);
+        }
+      }
+      res.writeHead(202); res.end('synthetic queued acknowledgement'); return;
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {

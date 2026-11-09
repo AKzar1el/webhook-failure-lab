@@ -77,6 +77,20 @@ or arbitrary observer-provided strings; the exported count is still solely
 receiver-reported. The CLI does not write files or upload reports; redirect
 stdout to a local artifact file if your CI expects a path.
 
+### Optional mixed-case webhook header replay
+
+Add `"mixedCaseWebhookHeaders": true` to send one valid signed JSON event
+with mixed-case physical `webhook-id`, `webhook-timestamp`, and
+`webhook-signature` field names, then replay its identical signed bytes
+using lowercase names. Both deliveries must succeed with one reported
+effect. Negative local fixtures expose header-name case-sensitive parsers,
+dedupe keys improperly tied to the original field-name spelling, and
+incorrect 409 responses for a valid replay.
+
+HTTP field names are case-insensitive; the values and HMAC remain unchanged.
+This opt-in check uses a raw loopback-only Node HTTP sender without redirects.
+It does not assert provider-specific casing or external exactly-once effects.
+
 ### Optional chunked UTF-8 signed delivery and replay
 
 Add `"chunkedSignedUtf8Replay": true` to validate a receiver's **HTTP
@@ -95,6 +109,26 @@ in results. Enable only for a development receiver that declares support for
 chunked request bodies. This probes receiver-reported processing count, not
 external exactly-once side effects; it does not stress-test arbitrary stream
 sizes or network segmentation patterns.
+
+### Optional aborted partial-body upload and signed retry
+
+Add `"partialBodyUploadAbort": true` to send a synthetic signed JSON event
+with its full `Content-Length` declared but only a prefix of the body written.
+The local HTTP client then closes the socket without finishing the upload. The
+receiver must not commit an effect or reserve the unverified event ID. A
+subsequent **complete, identical signed request** must commit once; its exact
+replay must be idempotent. The probe reports a transport error and the observer
+counts after abort, retry, and replay.
+
+Two intentionally broken localhost receivers demonstrate a cached ID from an
+incomplete upload and an effect committed during that upload. This check uses
+only raw HTTP to a validated loopback URL, never follows redirects, and adds no
+fault header or production dependency. A bounded 100 ms observation delay
+allows the local receiver to notice socket closure; it is **not** proof that
+every asynchronous effect has settled, that the receiver actually consumed
+every sent prefix byte, or that external business effects are exactly-once.
+Enable this check only for a development receiver that exposes the count
+observer and permits the synthetic retry contract.
 
 ### Optional signed malformed-body retry check
 
@@ -984,6 +1018,26 @@ before UTF-8 decoding and validates this probe with a fatal decoder. This
 opt-in rule applies to receivers that require UTF-8 JSON; it is not a universal
 provider redelivery contract. All traffic is loopback-only, and the observer
 cannot establish hidden business-effect correctness.
+
+### Opt-in delayed HTTP 202 acknowledgement and duplicate processing
+
+Set "asyncAckDelivery": true to verify a local receiver that acknowledges
+signed events with **HTTP 202** and processes them later. Two identical signed
+deliveries are sent concurrently before the synthetic worker completes.
+After a bounded settlement window, the observer must report **one** new
+processed event. A third exact signed replay must also return 202 without
+recording another event. Use "asyncAckWaitMs": 1000 (default; integer
+100-5000) to define how long the harness allows an asynchronous worker to
+finish before checking its observer.
+
+Broken local receivers acknowledge but drop queued work, record two effects
+for one job, or enqueue each concurrent copy without reserving its ID.
+The fixture uses an **in-memory** delayed worker and does not establish
+durable queue persistence, process-crash recovery, real provider delivery
+timing, or external exactly-once effects. Only one observation after the
+settlement window is asserted: a job completing later can change reality
+after the test. Enable this contract only for a receiver exposing the local
+processed-count adapter and an intentional 202 asynchronous response.
 
 ## Safety and scope
 
