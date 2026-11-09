@@ -227,6 +227,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectWrongContentTypeRetry !== 'boolean') {
     throw new TypeError('rejectWrongContentTypeRetry must be a boolean');
   }
+  const rejectWrongHttpMethodRetry = config.rejectWrongHttpMethodRetry;
+  if (rejectWrongHttpMethodRetry !== undefined &&
+      typeof rejectWrongHttpMethodRetry !== 'boolean') {
+    throw new TypeError('rejectWrongHttpMethodRetry must be a boolean');
+  }
   const rejectUnsupportedContentEncodingRetry = config.rejectUnsupportedContentEncodingRetry;
   if (rejectUnsupportedContentEncodingRetry !== undefined &&
       typeof rejectUnsupportedContentEncodingRetry !== 'boolean') {
@@ -502,7 +507,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     asyncAckDelivery, asyncAckWaitMs,
-    rejectWrongContentTypeRetry, rejectUnsupportedContentEncodingRetry,
+    rejectWrongContentTypeRetry, rejectWrongHttpMethodRetry,
+    rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey,
     rejectDuplicateNestedResourceId, rejectOversizedSignedPayload,
@@ -705,6 +711,39 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[1] === expectedProcessedCount &&
         observedCounts[2] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectWrongHttpMethodRetry) {
+    const methodId = `wfl_method_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: methodId } });
+    const signature = sign({ secret, id: methodId, timestamp: now, body: rawBody });
+    const headers = { 'content-type': 'application/json', 'webhook-id': methodId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const send = (method) => request(options.endpoint, {
+      method, redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    // The method is not signed. A rejected method must neither commit nor reserve this ID.
+    const wrongMethod = await send('PUT');
+    const afterWrongMethod = await observe();
+    const corrected = await send('POST');
+    const afterCorrected = await observe();
+    const replay = await send('POST');
+    const afterReplay = await observe();
+    const allowPost = wrongMethod.headers?.get?.('allow')?.split(',')
+      .some((method) => method.trim().toUpperCase() === 'POST') ?? false;
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [wrongMethod.status, corrected.status, replay.status];
+    const observedCounts = [afterWrongMethod, afterCorrected, afterReplay];
+    reports.push({ scenario: 'wrong_http_method_retry',
+      passed: httpStatuses[0] === 405 && allowPost &&
+        httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, allowPost, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 

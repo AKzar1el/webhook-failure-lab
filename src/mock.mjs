@@ -24,6 +24,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
+  supportHttpMethodValidation = true, unsafeAcceptWrongHttpMethod = false,
+  unsafePoisonWrongMethodDedupe = false,
+  unsafeCommitWrongMethodBeforeReject = false, unsafeOmitWrongMethodAllow = false,
   supportContentEncodingValidation = true, unsafeAcceptUnsupportedContentEncoding = false,
   unsafePoisonUnsupportedEncodingDedupe = false,
   unsafeCommitUnsupportedEncodingBeforeReject = false,
@@ -155,7 +158,17 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           ? { resourceVersion: resourceVersions.get(resourceId) ?? 0 } : {}) }));
       return;
     }
-    if (req.method !== 'POST' || url.pathname !== '/webhook') {
+    const wrongMethodProbe = req.method === 'PUT' && url.pathname === '/webhook' &&
+      typeof req.headers['webhook-id'] === 'string' &&
+      req.headers['webhook-id'].startsWith('wfl_method_');
+    if (wrongMethodProbe && supportHttpMethodValidation && !unsafeAcceptWrongHttpMethod) {
+      const id = req.headers['webhook-id'];
+      if (unsafePoisonWrongMethodDedupe || unsafeCommitWrongMethodBeforeReject) seen.add(id);
+      if (unsafeCommitWrongMethodBeforeReject) processedCount += 1;
+      res.writeHead(405, unsafeOmitWrongMethodAllow ? {} : { Allow: 'POST' });
+      res.end('method not allowed'); return;
+    }
+    if ((req.method !== 'POST' && !wrongMethodProbe) || url.pathname !== '/webhook') {
       res.writeHead(404); res.end(); return;
     }
     const chunks = [];

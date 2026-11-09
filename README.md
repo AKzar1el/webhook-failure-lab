@@ -204,6 +204,24 @@ Enable this opt-in contract only for a local receiver that explicitly
 requires JSON media type; some webhook providers legitimately use other
 content types. No provider behavior or unobserved business effects are proven.
 
+### Optional HTTP method rejection and signed POST retry
+
+Add `"rejectWrongHttpMethodRetry": true` to test a **local-only POST-only
+webhook route**. The harness sends a correctly HMAC-signed synthetic JSON
+event using HTTP `PUT`. A receiver honoring this explicit contract must
+respond `405 Method Not Allowed` with `Allow: POST`, without recording
+an effect or reserving the event ID. A subsequent `POST` of the **identical
+signed ID, timestamp and raw bytes** must process once; the exact signed
+POST replay must deduplicate. HTTP method is not authenticated by this
+signature, but it is part of the receiver's routing/authorization policy.
+
+Negative loopback receivers deliberately process PUT, reserve its rejected
+event ID, commit before returning 405, or omit the required Allow header.
+This is not a universal webhook-provider method policy: opt in only if
+your local receiver explicitly promises POST-only handling and 405.
+Only the caller-reported processed count is observed; this does not prove
+external exactly-once business effects.
+
 ### Optional unsupported Content-Encoding rejection and retry
 
 Add `"rejectUnsupportedContentEncodingRetry": true` to verify a local
