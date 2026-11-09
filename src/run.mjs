@@ -517,6 +517,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectTamperedDuplicateSignature !== 'boolean') {
     throw new TypeError('rejectTamperedDuplicateSignature must be a boolean');
   }
+  const rejectUnsignedCachedDuplicate = config.rejectUnsignedCachedDuplicate;
+  if (rejectUnsignedCachedDuplicate !== undefined &&
+      typeof rejectUnsignedCachedDuplicate !== 'boolean') {
+    throw new TypeError('rejectUnsignedCachedDuplicate must be a boolean');
+  }
   const rejectTamperedEventId = config.rejectTamperedEventId;
   if (rejectTamperedEventId !== undefined && typeof rejectTamperedEventId !== 'boolean') {
     throw new TypeError('rejectTamperedEventId must be a boolean');
@@ -611,7 +616,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     distinctEventsSameResource, distinctIdsIdenticalBody,
     tenantScopedEventIds,
     rejectFutureSignedTimestamp, rejectFutureDuplicateSignature, rejectNoncanonicalTimestamp,
-    rejectTamperedDuplicateSignature, rejectTamperedEventId, rejectStaleDuplicateSignature,
+    rejectTamperedDuplicateSignature, rejectUnsignedCachedDuplicate,
+    rejectTamperedEventId, rejectStaleDuplicateSignature,
     rejectUnauthenticatedCollision,
     restartAfterCommit, crashAfterPersist, crashBeforeCommit, parallelCrashRecoveryRetries,
     retentionWindowSeconds };
@@ -2478,6 +2484,36 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     reports.push({ scenario: 'tampered_duplicate_signature',
       passed: httpStatuses[0] === options.successStatus &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectUnsignedCachedDuplicate) {
+    const eventId = `wfl_unsigneddup_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const signature = sign({ secret, id: eventId, timestamp: now, body: rawBody });
+    const send = (signed) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now),
+        ...(signed ? { 'webhook-signature': signature } : {}) },
+      body: rawBody,
+    });
+    const original = await send(true);
+    const afterOriginal = await observe();
+    const unsigned = await send(false);
+    const afterUnsigned = await observe();
+    const replay = await send(true);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [original.status, unsigned.status, replay.status];
+    const observedCounts = [afterOriginal, afterUnsigned, afterReplay];
+    reports.push({ scenario: 'unsigned_cached_duplicate',
+      passed: httpStatuses[0] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[1]) && httpStatuses[1] !== 409 &&
+        httpStatuses[2] === options.successStatus &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
