@@ -96,6 +96,26 @@ chunked request bodies. This probes receiver-reported processing count, not
 external exactly-once side effects; it does not stress-test arbitrary stream
 sizes or network segmentation patterns.
 
+### Optional aborted partial-body upload and signed retry
+
+Add `"partialBodyUploadAbort": true` to send a synthetic signed JSON event
+with its full `Content-Length` declared but only a prefix of the body written.
+The local HTTP client then closes the socket without finishing the upload. The
+receiver must not commit an effect or reserve the unverified event ID. A
+subsequent **complete, identical signed request** must commit once; its exact
+replay must be idempotent. The probe reports a transport error and the observer
+counts after abort, retry, and replay.
+
+Two intentionally broken localhost receivers demonstrate a cached ID from an
+incomplete upload and an effect committed during that upload. This check uses
+only raw HTTP to a validated loopback URL, never follows redirects, and adds no
+fault header or production dependency. A bounded 100 ms observation delay
+allows the local receiver to notice socket closure; it is **not** proof that
+every asynchronous effect has settled, that the receiver actually consumed
+every sent prefix byte, or that external business effects are exactly-once.
+Enable this check only for a development receiver that exposes the count
+observer and permits the synthetic retry contract.
+
 ### Optional signed malformed-body retry check
 
 Add `"rejectMalformedSignedPayload": true` to `lab.json` to detect a
