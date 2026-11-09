@@ -170,6 +170,24 @@ The mock recognizes these narrowly constructed fixtures; a tested receiver
 must implement its own robust JSON validation. The count is caller-reported
 and cannot prove hidden business effects.
 
+### Optional nested duplicate resource-ID rejection and retry
+
+Add `"rejectDuplicateNestedResourceId": true` for a strict local JSON
+policy that rejects ambiguous **nested `data.id` fields**. The lab
+signs two otherwise valid JSON envelopes with the same delivery ID: one has
+conflicting literal `"id"` keys inside `data`; the other
+escapes the second key as `"i\u0064"`. Both must receive HTTP **422**
+without reserving the signed delivery ID or recording an effect. A separately
+signed, corrected single-ID body must then process once; its exact replay
+must not increment the observed count.
+
+Broken loopback receivers deliberately accept either duplicate-key shape,
+poison the dedupe cache on rejection, or commit before returning 422. This is
+an **opt-in synthetic receiver contract**, not a requirement of Standard
+Webhooks, a generic JSON duplicate-key scanner, or evidence about a provider's
+retry policy. The mock only recognizes the two constructed shapes; a real
+receiver needs an actual duplicate-aware parser. Counts remain receiver-reported.
+
 ### Optional wrong media-type retry check
 
 Add `"rejectWrongContentTypeRetry": true` to require **HTTP 415** for a

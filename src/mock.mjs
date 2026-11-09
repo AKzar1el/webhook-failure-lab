@@ -16,6 +16,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   supportDuplicateDataValidation = true, unsafeAcceptDuplicateDataKey = false,
   unsafeAcceptEscapedDuplicateDataKey = false,
   unsafePoisonDuplicateDataDedupe = false, unsafeCommitDuplicateDataBeforeReject = false,
+  supportNestedResourceIdValidation = true, unsafeAcceptDuplicateNestedId = false,
+  unsafeAcceptEscapedDuplicateNestedId = false,
+  unsafePoisonNestedIdDedupe = false, unsafeCommitNestedIdBeforeReject = false,
   supportPayloadSizeValidation = true, unsafeAcceptOversizedSignedPayload = false,
   unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
@@ -552,6 +555,20 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
           processedCount += 1; seen.add(id);
         }
         res.writeHead(422); res.end('duplicate synthetic data property'); return;
+      }
+    }
+    if (supportNestedResourceIdValidation && typeof id === 'string' &&
+        id.startsWith('wfl_nestedid_')) {
+      // Deliberately narrow fixtures, not a general duplicate JSON property parser.
+      const literalDuplicate = /"data"\s*:\s*\{\s*"id"\s*:\s*"[^"]*"\s*,\s*"id"\s*:/.test(body);
+      const escapedDuplicate = /"data"\s*:\s*\{\s*"id"\s*:\s*"[^"]*"\s*,\s*"i\\u0064"\s*:/.test(body);
+      if ((literalDuplicate && !unsafeAcceptDuplicateNestedId) ||
+          (escapedDuplicate && !unsafeAcceptEscapedDuplicateNestedId)) {
+        if (unsafePoisonNestedIdDedupe) seen.add(id);
+        if (unsafeCommitNestedIdBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(422); res.end('ambiguous nested synthetic resource ID'); return;
       }
     }
     if (supportPayloadSizeValidation && typeof id === 'string' &&

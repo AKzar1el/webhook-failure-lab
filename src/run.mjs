@@ -251,6 +251,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectDuplicateJsonDataKey !== 'boolean') {
     throw new TypeError('rejectDuplicateJsonDataKey must be a boolean');
   }
+  const rejectDuplicateNestedResourceId = config.rejectDuplicateNestedResourceId;
+  if (rejectDuplicateNestedResourceId !== undefined &&
+      typeof rejectDuplicateNestedResourceId !== 'boolean') {
+    throw new TypeError('rejectDuplicateNestedResourceId must be a boolean');
+  }
   const rejectOversizedSignedPayload = config.rejectOversizedSignedPayload;
   if (rejectOversizedSignedPayload !== undefined &&
       typeof rejectOversizedSignedPayload !== 'boolean') {
@@ -499,7 +504,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     asyncAckDelivery, asyncAckWaitMs,
     rejectWrongContentTypeRetry, rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
-    rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
+    rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey,
+    rejectDuplicateNestedResourceId, rejectOversizedSignedPayload,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectUnsupportedSignatureVersion,
     rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
@@ -863,6 +869,45 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     reports.push({ scenario: 'duplicate_json_data_key_retry',
       passed: httpStatuses[0] === 422 &&
         httpStatuses[1] === 422 &&
+        httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectDuplicateNestedResourceId) {
+    const eventId = `wfl_nestedid_${randomUUID().replaceAll('-', '')}`;
+    const timestamp = new Date(now * 1000).toISOString();
+    const prefix = '{"type":"test.created","timestamp":' + JSON.stringify(timestamp) +
+      ',"data":{"id":' + JSON.stringify('wfl_untrusted_resource_' + eventId);
+    // Both bodies authenticate but give conflicting logical data.id values.
+    const literalDuplicate = prefix + ',"id":' + JSON.stringify(eventId) + '}}';
+    const escapedDuplicate = prefix + ',"i\\u0064":' + JSON.stringify(eventId) + '}}';
+    const corrected = JSON.stringify({ type: 'test.created', timestamp, data: { id: eventId } });
+    const send = (rawBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: eventId, timestamp: now, body: rawBody }) },
+      body: rawBody,
+    });
+    const first = await send(literalDuplicate);
+    const afterFirst = await observe();
+    const escaped = await send(escapedDuplicate);
+    const afterEscaped = await observe();
+    const valid = await send(corrected);
+    const afterValid = await observe();
+    const replay = await send(corrected);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, escaped.status, valid.status, replay.status];
+    const observedCounts = [afterFirst, afterEscaped, afterValid, afterReplay];
+    reports.push({ scenario: 'duplicate_nested_resource_id_retry',
+      passed: httpStatuses[0] === 422 && httpStatuses[1] === 422 &&
         httpStatuses[2] === options.successStatus &&
         httpStatuses[3] === options.successStatus &&
         observedCounts[0] === expectedCount &&
