@@ -1,9 +1,28 @@
 import { randomUUID } from 'node:crypto';
-import { request as httpRequest } from 'node:http';
+import { Agent as HttpAgent, request as httpRequest } from 'node:http';
 import { requireLoopbackUrl } from './loopback.mjs';
 import { keyFromSecret, sign } from './standard.mjs';
 
 const DEFAULT_TIMEOUT_MS = 3000;
+
+function postOnKeepAliveAgent(endpoint, { id, timestamp, signature, body, signal }, agent) {
+  // A dedicated Node agent allows us to prove actual socket reuse, unlike fetch pooling.
+  return new Promise((resolve, reject) => {
+    let socket;
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', agent, signal,
+      headers: { 'content-type': 'application/json', 'webhook-id': id,
+        'webhook-timestamp': String(timestamp), 'webhook-signature': signature },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode, socket }));
+      response.once('error', reject);
+    });
+    outgoing.once('socket', (value) => { socket = value; });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
 
 function postWithMixedCaseWebhookHeaders(endpoint, { id, timestamp, signature, body, signal }) {
   // The raw Node client preserves field-name spelling; fetch canonicalizes it.
@@ -324,6 +343,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (mixedCaseWebhookHeaders !== undefined && typeof mixedCaseWebhookHeaders !== 'boolean') {
     throw new TypeError('mixedCaseWebhookHeaders must be a boolean');
   }
+  const keepAliveConnectionIsolation = config.keepAliveConnectionIsolation;
+  if (keepAliveConnectionIsolation !== undefined &&
+      typeof keepAliveConnectionIsolation !== 'boolean') {
+    throw new TypeError('keepAliveConnectionIsolation must be a boolean');
+  }
   const partialBodyUploadAbort = config.partialBodyUploadAbort;
   if (partialBodyUploadAbort !== undefined && typeof partialBodyUploadAbort !== 'boolean') {
     throw new TypeError('partialBodyUploadAbort must be a boolean');
@@ -517,7 +541,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
     rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
-    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, partialBodyUploadAbort,
+    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, keepAliveConnectionIsolation,
+    partialBodyUploadAbort,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
@@ -2528,6 +2553,55 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[2] === expectedProcessedCount,
       firstAttemptOutcome, httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
+  }
+
+  if (options.keepAliveConnectionIsolation) {
+    const eventRoot = `wfl_keepalive_${randomUUID().replaceAll('-', '')}`;
+    const events = ['one', 'two'].map((suffix) => {
+      const eventId = `${eventRoot}_${suffix}`;
+      const body = JSON.stringify({ type: 'test.created',
+        timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+      return { id: eventId, timestamp: now, body,
+        signature: sign({ secret, id: eventId, timestamp: now, body }) };
+    });
+    const originalAgent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    const freshAgent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    let responses;
+    try {
+      // Three sequential requests must share a socket; the fourth uses a new one.
+      const first = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[0], signal: timeout() }, originalAgent);
+      const countFirst = await observe();
+      const second = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[1], signal: timeout() }, originalAgent);
+      const countSecond = await observe();
+      const sameSocketReplay = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[0], signal: timeout() }, originalAgent);
+      const countReplay = await observe();
+      const freshSocketReplay = await postOnKeepAliveAgent(options.endpoint,
+        { ...events[1], signal: timeout() }, freshAgent);
+      const countFresh = await observe();
+      responses = {
+        httpStatuses: [first.status, second.status,
+          sameSocketReplay.status, freshSocketReplay.status],
+        observedCounts: [countFirst, countSecond, countReplay, countFresh],
+        sameSocketReused: !!first.socket && first.socket === second.socket &&
+          first.socket === sameSocketReplay.socket,
+        freshSocketUsed: !!freshSocketReplay.socket &&
+          freshSocketReplay.socket !== first.socket,
+      };
+    } finally {
+      originalAgent.destroy();
+      freshAgent.destroy();
+    }
+    const expectedCounts = [expectedCount + 1, expectedCount + 2,
+      expectedCount + 2, expectedCount + 2];
+    reports.push({ scenario: 'keep_alive_connection_isolation',
+      passed: responses.sameSocketReused && responses.freshSocketUsed &&
+        responses.httpStatuses.every((status) => status === options.successStatus) &&
+        responses.observedCounts.every((count, index) => count === expectedCounts[index]),
+      ...responses, expectedProcessedCount: expectedCount + 2 });
+    expectedCount += 2;
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,

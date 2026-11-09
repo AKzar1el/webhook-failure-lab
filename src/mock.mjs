@@ -63,6 +63,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeDedupeByTransferFraming = false,
   unsafeRejectMixedCaseWebhookHeaders = false, unsafeDedupeByHeaderSpelling = false,
   unsafeRejectLowercaseHeaderReplay = false,
+  unsafeCoalesceKeepAliveEvents = false, unsafeRejectNextKeepAliveEvent = false,
+  unsafeConnectionScopedDedupe = false, unsafeReprocessKeepAliveReplay = false,
   unsafeReserveTruncatedUploadId = false, unsafeCommitTruncatedUpload = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
   unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
@@ -109,6 +111,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   const seenCharsetKeys = new Set();
   const seenTransferKeys = new Set();
   const seenHeaderSpellings = new Set();
+  const firstKeepAliveEventBySocket = new WeakMap();
+  const keepAliveIdsBySocket = new WeakMap();
   const seenAt = new Map();
   const seenConflictBodies = new Map();
   const seenResignedSignatures = new Set();
@@ -937,6 +941,31 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         }
       }
       res.writeHead(202); res.end('synthetic queued acknowledgement'); return;
+    }
+    if (typeof id === 'string' && id.startsWith('wfl_keepalive_')) {
+      if (unsafeConnectionScopedDedupe) {
+        let socketIds = keepAliveIdsBySocket.get(req.socket);
+        if (!socketIds) {
+          socketIds = new Set();
+          keepAliveIdsBySocket.set(req.socket, socketIds);
+        }
+        if (!socketIds.has(id)) {
+          socketIds.add(id);
+          processedCount += 1;
+        }
+        res.writeHead(200); res.end('connection-scoped idempotency'); return;
+      }
+      const firstOnSocket = firstKeepAliveEventBySocket.get(req.socket);
+      if (!firstOnSocket) firstKeepAliveEventBySocket.set(req.socket, id);
+      if (firstOnSocket && firstOnSocket !== id &&
+          (unsafeCoalesceKeepAliveEvents || unsafeRejectNextKeepAliveEvent)) {
+        res.writeHead(unsafeRejectNextKeepAliveEvent ? 409 : 200);
+        res.end('wrongly reused previous connection state'); return;
+      }
+      if (unsafeReprocessKeepAliveReplay && firstOnSocket === id && seen.has(id)) {
+        processedCount += 1;
+        res.writeHead(200); res.end('reprocessed cached request'); return;
+      }
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {
