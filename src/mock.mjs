@@ -5,6 +5,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeRejectPreviousSecret = false, unsafeAcceptRetiredSecret = false,
   unsafeProcessRetiredBeforeReject = false, dedupe = true, verifySignatures = true,
   verifyFreshness = true, unsafeConcurrentDedupe = false, supportRetryFault = true,
+  supportAsyncAck = true, unsafeAsyncAckDropJob = false,
+  unsafeAsyncAckDoubleCommit = false, unsafeAsyncAckNoReservation = false,
   supportRateLimitFault = true, unsafeReserveRateLimitedId = false,
   unsafeCommitRateLimitedBeforeReject = false, unsafeOmitRateLimitRetryAfter = false,
   supportMalformedValidation = true, unsafeAcceptMalformedSignedPayload = false,
@@ -854,6 +856,18 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1;
       }
       res.writeHead(200); res.end('accepted'); return;
+    }
+    if (supportAsyncAck && typeof id === 'string' && id.startsWith('wfl_asyncack_')) {
+      if (!seen.has(id)) {
+        // In-memory synthetic queue, not a durable job system.
+        if (!unsafeAsyncAckNoReservation) seen.add(id);
+        if (!unsafeAsyncAckDropJob) {
+          setTimeout(() => {
+            processedCount += unsafeAsyncAckDoubleCommit ? 2 : 1;
+          }, 35);
+        }
+      }
+      res.writeHead(202); res.end('synthetic queued acknowledgement'); return;
     }
     const alreadySeen = seen.has(id);
     if (unsafeConcurrentDedupe && typeof id === 'string' && id.startsWith('wfl_race_')) {

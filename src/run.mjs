@@ -153,6 +153,17 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10000) {
     throw new TypeError('timeoutMs must be between 100 and 10000');
   }
+  const asyncAckDelivery = config.asyncAckDelivery;
+  if (asyncAckDelivery !== undefined && typeof asyncAckDelivery !== 'boolean') {
+    throw new TypeError('asyncAckDelivery must be a boolean');
+  }
+  const asyncAckWaitMs = config.asyncAckWaitMs === undefined ? 1000 : config.asyncAckWaitMs;
+  if (!Number.isInteger(asyncAckWaitMs) || asyncAckWaitMs < 100 || asyncAckWaitMs > 5000) {
+    throw new TypeError('asyncAckWaitMs must be an integer between 100 and 5000');
+  }
+  if (!asyncAckDelivery && config.asyncAckWaitMs !== undefined) {
+    throw new TypeError('asyncAckWaitMs requires asyncAckDelivery');
+  }
   const rejectMalformedSignedPayload = config.rejectMalformedSignedPayload;
   if (rejectMalformedSignedPayload !== undefined &&
       typeof rejectMalformedSignedPayload !== 'boolean') {
@@ -424,6 +435,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     }
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
+    asyncAckDelivery, asyncAckWaitMs,
     rejectWrongContentTypeRetry, rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey, rejectOversizedSignedPayload,
@@ -2280,6 +2292,34 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     reports.push({ scenario: 'tampered_webhook_id_header',
       passed: httpStatuses[0] === options.successStatus &&
         options.rejectionStatuses.includes(httpStatuses[1]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.asyncAckDelivery) {
+    const eventId = 'wfl_asyncack_' + randomUUID().replaceAll('-', '');
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const signature = sign({ secret, id: eventId, timestamp: now, body: rawBody });
+    const send = () => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': eventId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: rawBody,
+    });
+    // Two copies arrive before the synthetic worker settles. A 202 alone is
+    // not evidence that an event was eventually processed or enqueued once.
+    const [first, duplicate] = await Promise.all([send(), send()]);
+    await new Promise((resolve) => setTimeout(resolve, options.asyncAckWaitMs));
+    const afterSettlement = await observe();
+    const replay = await send();
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, duplicate.status, replay.status];
+    const observedCounts = [afterSettlement, afterReplay];
+    reports.push({ scenario: 'async_ack_dedupe',
+      passed: httpStatuses.every((status) => status === 202) &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;

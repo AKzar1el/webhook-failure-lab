@@ -967,6 +967,26 @@ opt-in rule applies to receivers that require UTF-8 JSON; it is not a universal
 provider redelivery contract. All traffic is loopback-only, and the observer
 cannot establish hidden business-effect correctness.
 
+### Opt-in delayed HTTP 202 acknowledgement and duplicate processing
+
+Set "asyncAckDelivery": true to verify a local receiver that acknowledges
+signed events with **HTTP 202** and processes them later. Two identical signed
+deliveries are sent concurrently before the synthetic worker completes.
+After a bounded settlement window, the observer must report **one** new
+processed event. A third exact signed replay must also return 202 without
+recording another event. Use "asyncAckWaitMs": 1000 (default; integer
+100-5000) to define how long the harness allows an asynchronous worker to
+finish before checking its observer.
+
+Broken local receivers acknowledge but drop queued work, record two effects
+for one job, or enqueue each concurrent copy without reserving its ID.
+The fixture uses an **in-memory** delayed worker and does not establish
+durable queue persistence, process-crash recovery, real provider delivery
+timing, or external exactly-once effects. Only one observation after the
+settlement window is asserted: a job completing later can change reality
+after the test. Enable this contract only for a receiver exposing the local
+processed-count adapter and an intentional 202 asynchronous response.
+
 ## Safety and scope
 
 - The runner accepts **plain HTTP loopback endpoints only**: `127.0.0.1`, `localhost`, `[::1]`; remote production hosts and TLS are intentionally unsupported. This is a testing tool, not a generic webhook bombardment service.
