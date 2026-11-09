@@ -494,6 +494,11 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (resignedDuplicateDelivery !== undefined && typeof resignedDuplicateDelivery !== 'boolean') {
     throw new TypeError('resignedDuplicateDelivery must be a boolean');
   }
+  const concurrentResignedDuplicateDelivery = config.concurrentResignedDuplicateDelivery;
+  if (concurrentResignedDuplicateDelivery !== undefined &&
+      typeof concurrentResignedDuplicateDelivery !== 'boolean') {
+    throw new TypeError('concurrentResignedDuplicateDelivery must be a boolean');
+  }
   const rejectFutureSignedTimestamp = config.rejectFutureSignedTimestamp;
   if (rejectFutureSignedTimestamp !== undefined && typeof rejectFutureSignedTimestamp !== 'boolean') {
     throw new TypeError('rejectFutureSignedTimestamp must be a boolean');
@@ -600,7 +605,8 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     outOfOrderStateTransitions, delayedCreationReplayAfterActivation,
     secretRotation, rejectRetiredKeyDuplicate, multiSignatureHeader,
     conflictingEventIdPayload,
-    concurrentConflictingEventIdPayload, resignedDuplicateDelivery, caseSensitiveEventIds,
+    concurrentConflictingEventIdPayload, resignedDuplicateDelivery,
+    concurrentResignedDuplicateDelivery, caseSensitiveEventIds,
     prototypePropertyEventIds,
     distinctEventsSameResource, distinctIdsIdenticalBody,
     tenantScopedEventIds,
@@ -2405,6 +2411,36 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       passed: httpStatuses.every((status) => status === options.successStatus) &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.concurrentResignedDuplicateDelivery) {
+    const replayId = `wfl_resignrace_${randomUUID().replaceAll('-', '')}`;
+    const replayBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: replayId } });
+    const signatures = [now, now - 1].map((timestamp) =>
+      sign({ secret, id: replayId, timestamp, body: replayBody }));
+    const send = (index) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': replayId,
+        'webhook-timestamp': String(now - index),
+        'webhook-signature': signatures[index] },
+      body: replayBody,
+    });
+    // Dispatch both authenticated versions before awaiting either response.
+    const initial = await Promise.all([send(0), send(1)]);
+    const afterConcurrent = await observe();
+    const replay = await send(1);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [...initial.map((response) => response.status), replay.status];
+    const observedCounts = [afterConcurrent, afterReplay];
+    const distinctSignatures = signatures[0] !== signatures[1];
+    reports.push({ scenario: 'concurrent_resigned_duplicate_delivery',
+      passed: distinctSignatures &&
+        httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, distinctSignatures, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
