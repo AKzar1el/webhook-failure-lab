@@ -77,6 +77,25 @@ or arbitrary observer-provided strings; the exported count is still solely
 receiver-reported. The CLI does not write files or upload reports; redirect
 stdout to a local artifact file if your CI expects a path.
 
+### Optional HTTP keep-alive connection isolation and cross-connection replay
+
+Add `"keepAliveConnectionIsolation": true` to verify that a receiver handles
+**two independently signed events on the same HTTP/1.1 keep-alive connection**
+without merging or rejecting the second event. The harness replays the first
+event on that same socket, then replays the second event using a **new TCP
+connection**. All four deliveries must return `successStatus`; the local
+`processedCount` observer should increment for only the two unique IDs.
+The report includes `sameSocketReused` and `freshSocketUsed` booleans so a
+pass cannot be inferred when connection pooling behaves differently.
+
+Four deliberately broken loopback receivers demonstrate per-connection
+event coalescing, false 409 rejection, deduplication scoped only to a socket,
+and duplicate processing on a reused connection. This tests the receiver's
+request isolation and reported counts, **not** durable idempotency across
+process restarts or unseen external side effects. The raw Node HTTP sender
+validates the loopback-only target, does not follow redirects, and uses
+synthetic HMAC signing keys. Keep-alive support is an opt-in receiver contract.
+
 ### Optional mixed-case webhook header replay
 
 Add `"mixedCaseWebhookHeaders": true` to send one valid signed JSON event
