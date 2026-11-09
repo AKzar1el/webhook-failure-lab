@@ -325,6 +325,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (rejectOversizedGzipRetry !== undefined && typeof rejectOversizedGzipRetry !== 'boolean') {
     throw new TypeError('rejectOversizedGzipRetry must be a boolean');
   }
+  const rejectMalformedGzipRetry = config.rejectMalformedGzipRetry;
+  if (rejectMalformedGzipRetry !== undefined && typeof rejectMalformedGzipRetry !== 'boolean') {
+    throw new TypeError('rejectMalformedGzipRetry must be a boolean');
+  }
   const retryAfterRejectedSignature = config.retryAfterRejectedSignature;
   if (retryAfterRejectedSignature !== undefined &&
       typeof retryAfterRejectedSignature !== 'boolean') {
@@ -580,6 +584,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey,
     rejectDuplicateNestedResourceId, rejectOversizedSignedPayload, rejectOversizedGzipRetry,
+    rejectMalformedGzipRetry,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectUnsupportedSignatureVersion,
     rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
@@ -1459,6 +1464,47 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[2] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount,
       compressedBodyBelowLimit, inflatedBodyExceedsLimit });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectMalformedGzipRetry) {
+    const gzipId = `wfl_gzipbad_${randomUUID().replaceAll('-', '')}`;
+    const event = { type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: gzipId } };
+    const correctedGzip = gzipSync(Buffer.from(JSON.stringify(event), 'utf8'));
+    // Both malformed deliveries carry a valid HMAC over their exact corrupt wire bytes.
+    const truncatedGzip = correctedGzip.subarray(0, correctedGzip.length - 4);
+    const badChecksumGzip = Buffer.from(correctedGzip);
+    badChecksumGzip[badChecksumGzip.length - 8] ^= 1;
+    const corruptWireBodiesBelowLimit = truncatedGzip.length < 1024 &&
+      badChecksumGzip.length < 1024;
+    const send = (wireBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip',
+        'webhook-id': gzipId, 'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: gzipId, timestamp: now, body: wireBody }) },
+      body: wireBody,
+    });
+    const truncated = await send(truncatedGzip);
+    const afterTruncated = await observe();
+    const badChecksum = await send(badChecksumGzip);
+    const afterBadChecksum = await observe();
+    const corrected = await send(correctedGzip);
+    const afterCorrected = await observe();
+    const replay = await send(correctedGzip);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [truncated.status, badChecksum.status, corrected.status, replay.status];
+    const observedCounts = [afterTruncated, afterBadChecksum, afterCorrected, afterReplay];
+    reports.push({ scenario: 'malformed_gzip_retry',
+      passed: corruptWireBodiesBelowLimit &&
+        httpStatuses[0] === 400 && httpStatuses[1] === 400 &&
+        httpStatuses[2] === options.successStatus &&
+        httpStatuses[3] === options.successStatus &&
+        observedCounts[0] === expectedCount && observedCounts[1] === expectedCount &&
+        observedCounts[2] === expectedProcessedCount &&
+        observedCounts[3] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount, corruptWireBodiesBelowLimit });
     expectedCount = expectedProcessedCount;
   }
 
