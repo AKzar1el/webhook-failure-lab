@@ -207,6 +207,41 @@ function postAbortedPartialBody(endpoint, { id, timestamp, signature, body, sign
   });
 }
 
+function postAbortedChunkedBody(endpoint, { id, timestamp, signature, body, signal }) {
+  // Send a complete HTTP chunk but deliberately omit the terminating zero-length
+  // chunk. A receiver must not process signed content until the HTTP body ends.
+  return new Promise((resolve, reject) => {
+    let responded = false;
+    let closedByProbe = false;
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json',
+        'webhook-id': id, 'webhook-timestamp': String(timestamp),
+        'webhook-signature': signature },
+    }, (response) => {
+      responded = true;
+      response.resume();
+      response.once('end', () => resolve(`http_${response.statusCode}`));
+      response.once('error', reject);
+    });
+    outgoing.once('error', (error) => {
+      if (closedByProbe && !responded) resolve('transport_error');
+      else reject(error);
+    });
+    outgoing.once('close', () => {
+      if (!responded && closedByProbe) resolve('transport_error');
+      else if (!responded) reject(new Error('Chunked upload closed before deliberate abort'));
+    });
+    const prefix = body.subarray(0, Math.max(1, Math.floor(body.length / 2)));
+    outgoing.write(prefix, () => {
+      if (!outgoing.destroyed) {
+        closedByProbe = true;
+        outgoing.destroy();
+      }
+    });
+  });
+}
+
 function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecret) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('Config must be an object');
@@ -351,6 +386,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   const partialBodyUploadAbort = config.partialBodyUploadAbort;
   if (partialBodyUploadAbort !== undefined && typeof partialBodyUploadAbort !== 'boolean') {
     throw new TypeError('partialBodyUploadAbort must be a boolean');
+  }
+  const abortedChunkedUploadRetry = config.abortedChunkedUploadRetry;
+  if (abortedChunkedUploadRetry !== undefined && typeof abortedChunkedUploadRetry !== 'boolean') {
+    throw new TypeError('abortedChunkedUploadRetry must be a boolean');
   }
   const rejectInvalidUtf8Retry = config.rejectInvalidUtf8Retry;
   if (rejectInvalidUtf8Retry !== undefined && typeof rejectInvalidUtf8Retry !== 'boolean') {
@@ -542,7 +581,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
     rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
     chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, keepAliveConnectionIsolation,
-    partialBodyUploadAbort,
+    partialBodyUploadAbort, abortedChunkedUploadRetry,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
@@ -2546,6 +2585,40 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     const httpStatuses = [retry.status, replay.status];
     const observedCounts = [afterAbort, afterRetry, afterReplay];
     reports.push({ scenario: 'partial_body_upload_abort_retry',
+      passed: firstAttemptOutcome === 'transport_error' &&
+        httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      firstAttemptOutcome, httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.abortedChunkedUploadRetry) {
+    const eventId = `wfl_partialchunk_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const bodyBytes = Buffer.from(rawBody);
+    const signature = sign({ secret, id: eventId, timestamp: now, body: bodyBytes });
+    const headers = { 'content-type': 'application/json', 'webhook-id': eventId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const firstAttemptOutcome = await postAbortedChunkedBody(options.endpoint,
+      { id: eventId, timestamp: now, signature, body: bodyBytes, signal: timeout() });
+    // Let the local receiver observe the incomplete chunk stream before retry.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const afterAbort = await observe();
+    const retry = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const afterRetry = await observe();
+    const replay = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [retry.status, replay.status];
+    const observedCounts = [afterAbort, afterRetry, afterReplay];
+    reports.push({ scenario: 'aborted_chunked_upload_retry',
       passed: firstAttemptOutcome === 'transport_error' &&
         httpStatuses.every((status) => status === options.successStatus) &&
         observedCounts[0] === expectedCount &&

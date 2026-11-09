@@ -149,6 +149,23 @@ every sent prefix byte, or that external business effects are exactly-once.
 Enable this check only for a development receiver that exposes the count
 observer and permits the synthetic retry contract.
 
+### Optional aborted HTTP chunked upload and signed retry
+
+Add `"abortedChunkedUploadRetry": true` to test a distinct request-framing
+failure: a valid signed JSON event begins as an HTTP chunked upload, but the
+client closes the socket **without transmitting the terminating zero chunk**.
+Even if an earlier chunk was delivered, the receiver must not reserve its
+unverified event ID or commit an effect. The identical fully signed body then
+arrives as a complete request and must process once; its exact replay must
+not add a second observed effect.
+
+Two deliberately broken localhost receivers demonstrate ID reservation or
+an effect after the incomplete chunked stream. This check is independent of
+the `Content-Length` abort probe and composes with it. Only validated HTTP
+loopback is contacted, with synthetic keys and no redirects. The bounded
+100 ms post-abort observation is not a durability or settlement guarantee,
+and the caller-controlled count cannot prove external exactly-once effects.
+
 ### Optional signed malformed-body retry check
 
 Add `"rejectMalformedSignedPayload": true` to `lab.json` to detect a

@@ -66,6 +66,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeCoalesceKeepAliveEvents = false, unsafeRejectNextKeepAliveEvent = false,
   unsafeConnectionScopedDedupe = false, unsafeReprocessKeepAliveReplay = false,
   unsafeReserveTruncatedUploadId = false, unsafeCommitTruncatedUpload = false,
+  unsafeReserveAbortedChunkId = false, unsafeCommitAbortedChunk = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
   unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -191,6 +192,13 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         // ID and reserve/commit before all signed bytes have been received.
         if (unsafeReserveTruncatedUploadId || unsafeCommitTruncatedUpload) seen.add(abortedId);
         if (unsafeCommitTruncatedUpload) processedCount += 1;
+      }
+      if (typeof abortedId === 'string' && abortedId.startsWith('wfl_partialchunk_') &&
+          req.headers['transfer-encoding'] === 'chunked') {
+        // Deliberately broken streaming receivers reserve or commit after seeing
+        // a chunk, even though the terminating chunk never arrived.
+        if (unsafeReserveAbortedChunkId || unsafeCommitAbortedChunk) seen.add(abortedId);
+        if (unsafeCommitAbortedChunk) processedCount += 1;
       }
       res.destroy();
       return;
