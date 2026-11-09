@@ -340,6 +340,23 @@ The baseline four checks are unchanged. A different provider's compression
 or size policy may differ; this is neither an anti-zip-bomb guarantee for
 arbitrary receivers nor evidence of unobserved external side effects.
 
+### Optional authenticated malformed gzip rejection and retry
+
+Add `"rejectMalformedGzipRetry": true` only when a **local development receiver**
+explicitly supports `Content-Encoding: gzip` and rejects corrupt compressed
+streams with HTTP **400**. The harness signs the exact compressed wire bytes
+for two malformed deliveries using the same event ID: one truncated gzip
+trailer and one incorrect CRC32 checksum. Neither may reserve the event ID
+or record an observed effect. The harness then independently signs complete
+valid gzip bytes for the same ID, expects one processing effect, and checks
+that an exact replay adds none.
+
+Three deliberately broken localhost receivers expose invalid gzip acceptance,
+deduplication poisoning on rejection, and effects committed before a 400.
+The mock bounds decompression to 1,024 bytes. This is an opt-in **synthetic
+receiver contract**, not a claim about a provider's gzip support, HTTP error
+policy, or unobserved exactly-once business effects.
+
 ### Optional tenant-scoped signed event ID isolation
 
 Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,

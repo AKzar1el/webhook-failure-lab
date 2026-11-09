@@ -24,6 +24,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
   supportGzipInflationCap = true, unsafeAcceptOversizedGzip = false,
   unsafeCacheOversizedGzip = false, unsafeCommitOversizedGzipBeforeReject = false,
+  supportMalformedGzipValidation = true, unsafeAcceptMalformedGzip = false,
+  unsafeCacheMalformedGzip = false, unsafeCommitMalformedGzipBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
@@ -610,6 +612,29 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(413); res.end('synthetic body size limit exceeded'); return;
+    }
+    if (supportMalformedGzipValidation && typeof id === 'string' &&
+        id.startsWith('wfl_gzipbad_')) {
+      if (req.headers['content-encoding'] !== 'gzip') {
+        res.writeHead(415); res.end('gzip required for synthetic corruption probe'); return;
+      }
+      let invalid = false;
+      try {
+        const decoded = gunzipSync(rawBody, { maxOutputLength: 1024 });
+        const event = JSON.parse(decoded.toString('utf8'));
+        invalid = event?.type !== 'test.created' || event?.data?.id !== id;
+      } catch { invalid = true; }
+      if (invalid) {
+        if (unsafeAcceptMalformedGzip) {
+          processedCount += 1; seen.add(id);
+          res.writeHead(200); res.end('malformed compressed event accepted'); return;
+        }
+        if (unsafeCacheMalformedGzip) seen.add(id);
+        if (unsafeCommitMalformedGzipBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(400); res.end('invalid synthetic gzip stream'); return;
+      }
     }
     if (supportGzipInflationCap && typeof id === 'string' && id.startsWith('wfl_gzipcap_')) {
       if (req.headers['content-encoding'] !== 'gzip') {
