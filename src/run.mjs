@@ -5,6 +5,24 @@ import { keyFromSecret, sign } from './standard.mjs';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
+function postWithMixedCaseWebhookHeaders(endpoint, { id, timestamp, signature, body, signal }) {
+  // The raw Node client preserves field-name spelling; fetch canonicalizes it.
+  // HTTP field names are case-insensitive, while the authenticated values stay identical.
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'Content-Type': 'application/json', 'WeBhOoK-Id': id,
+        'WEBHOOK-TIMESTAMP': String(timestamp), 'WebHook-Signature': signature },
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolve({ status: response.statusCode }));
+      response.once('error', reject);
+    });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
+
 function postWithDuplicateWireId(endpoint, { id, timestamp, signature, body, signal }) {
   // fetch coalesces duplicate header fields. Node's HTTP client emits two physical
   // webhook-id fields, while the already-validated URL remains loopback-only.
@@ -292,6 +310,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   if (chunkedSignedUtf8Replay !== undefined && typeof chunkedSignedUtf8Replay !== 'boolean') {
     throw new TypeError('chunkedSignedUtf8Replay must be a boolean');
   }
+  const mixedCaseWebhookHeaders = config.mixedCaseWebhookHeaders;
+  if (mixedCaseWebhookHeaders !== undefined && typeof mixedCaseWebhookHeaders !== 'boolean') {
+    throw new TypeError('mixedCaseWebhookHeaders must be a boolean');
+  }
   const partialBodyUploadAbort = config.partialBodyUploadAbort;
   if (partialBodyUploadAbort !== undefined && typeof partialBodyUploadAbort !== 'boolean') {
     throw new TypeError('partialBodyUploadAbort must be a boolean');
@@ -483,7 +505,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
     rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
-    chunkedSignedUtf8Replay, partialBodyUploadAbort,
+    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, partialBodyUploadAbort,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
@@ -568,6 +590,31 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
   await deliver('tampered_body', tamperId, body + ' ', body, now, false, 0);
   const staleId = `wfl_${randomUUID().replaceAll('-', '')}`;
   await deliver('stale_timestamp', staleId, body, body, now - 3600, false, 0);
+
+  if (options.mixedCaseWebhookHeaders) {
+    const headerCaseId = `wfl_headercase_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      data: { id: headerCaseId } });
+    const signature = sign({ secret, id: headerCaseId, timestamp: now, body: rawBody });
+    const mixed = await postWithMixedCaseWebhookHeaders(options.endpoint,
+      { id: headerCaseId, timestamp: now, signature, body: rawBody, signal: timeout() });
+    const afterMixed = await observe();
+    const replay = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'webhook-id': headerCaseId,
+        'webhook-timestamp': String(now), 'webhook-signature': signature },
+      body: rawBody,
+    });
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [mixed.status, replay.status];
+    const observedCounts = [afterMixed, afterReplay];
+    reports.push({ scenario: 'mixed_case_header_replay',
+      passed: httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
 
   if (options.chunkedSignedUtf8Replay) {
     const chunkedId = `wfl_chunked_${randomUUID().replaceAll('-', '')}`;
