@@ -323,6 +323,23 @@ not a universal Standard Webhooks or provider payload limit. Enable it only
 when a local receiver intentionally enforces that limit; it does not prove
 provider retry behavior or unobserved business effects.
 
+### Optional signed gzip inflation-limit rejection and retry
+
+Add `"rejectOversizedGzipRetry": true` only when a **local test receiver**
+explicitly supports `Content-Encoding: gzip` and enforces a **1,024-byte
+decompressed JSON body limit**. The harness signs the actual compressed wire
+bytes, sends a gzip body under the wire-size limit that expands beyond the
+declared cap, and expects HTTP **413** before any effect or ID reservation.
+It then signs a smaller gzip body with the same ID, expects one effect,
+and verifies an exact signed replay is idempotent.
+
+Negative localhost fixtures accept the inflated oversized body, reserve
+the rejected ID, or commit an effect before returning 413. The mock uses
+a bounded gzip inflater and validates the corrected synthetic JSON.
+The baseline four checks are unchanged. A different provider's compression
+or size policy may differ; this is neither an anti-zip-bomb guarantee for
+arbitrary receivers nor evidence of unobserved external side effects.
+
 ### Optional tenant-scoped signed event ID isolation
 
 Add `"tenantScopedEventIds": true` to `lab.json`, and supply a second,

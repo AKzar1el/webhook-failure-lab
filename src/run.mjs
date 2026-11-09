@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Agent as HttpAgent, request as httpRequest } from 'node:http';
+import { gzipSync } from 'node:zlib';
 import { requireLoopbackUrl } from './loopback.mjs';
 import { keyFromSecret, sign } from './standard.mjs';
 
@@ -320,6 +321,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
       typeof rejectOversizedSignedPayload !== 'boolean') {
     throw new TypeError('rejectOversizedSignedPayload must be a boolean');
   }
+  const rejectOversizedGzipRetry = config.rejectOversizedGzipRetry;
+  if (rejectOversizedGzipRetry !== undefined && typeof rejectOversizedGzipRetry !== 'boolean') {
+    throw new TypeError('rejectOversizedGzipRetry must be a boolean');
+  }
   const retryAfterRejectedSignature = config.retryAfterRejectedSignature;
   if (retryAfterRejectedSignature !== undefined &&
       typeof retryAfterRejectedSignature !== 'boolean') {
@@ -574,7 +579,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey,
-    rejectDuplicateNestedResourceId, rejectOversizedSignedPayload,
+    rejectDuplicateNestedResourceId, rejectOversizedSignedPayload, rejectOversizedGzipRetry,
     retryAfterRejectedSignature, rejectMissingSignatureRetry, rejectUnsupportedSignatureVersion,
     rejectMissingTimestampRetry,
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
@@ -1415,6 +1420,45 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         observedCounts[1] === expectedProcessedCount &&
         observedCounts[2] === expectedProcessedCount,
       httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.rejectOversizedGzipRetry) {
+    const compressedId = `wfl_gzipcap_${randomUUID().replaceAll('-', '')}`;
+    const event = { type: 'test.created', timestamp: new Date(now * 1000).toISOString(),
+      data: { id: compressedId } };
+    const oversizedBody = JSON.stringify({ ...event,
+      data: { ...event.data, note: 'x'.repeat(2048) } });
+    const oversizedGzip = gzipSync(Buffer.from(oversizedBody, 'utf8'));
+    const correctedGzip = gzipSync(Buffer.from(JSON.stringify(event), 'utf8'));
+    const compressedBodyBelowLimit = oversizedGzip.length < 1024;
+    const inflatedBodyExceedsLimit = Buffer.byteLength(oversizedBody, 'utf8') > 1024;
+    const send = (wireBody) => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(),
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip',
+        'webhook-id': compressedId, 'webhook-timestamp': String(now),
+        'webhook-signature': sign({ secret, id: compressedId, timestamp: now, body: wireBody }) },
+      body: wireBody,
+    });
+    // Authenticate compressed wire bytes; enforce the local size cap on inflated JSON.
+    const invalid = await send(oversizedGzip);
+    const afterInvalid = await observe();
+    const corrected = await send(correctedGzip);
+    const afterCorrected = await observe();
+    const replay = await send(correctedGzip);
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [invalid.status, corrected.status, replay.status];
+    const observedCounts = [afterInvalid, afterCorrected, afterReplay];
+    reports.push({ scenario: 'oversized_gzip_retry',
+      passed: compressedBodyBelowLimit && inflatedBodyExceedsLimit &&
+        httpStatuses[0] === 413 && httpStatuses[1] === options.successStatus &&
+        httpStatuses[2] === options.successStatus &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      httpStatuses, observedCounts, expectedProcessedCount,
+      compressedBodyBelowLimit, inflatedBodyExceedsLimit });
     expectedCount = expectedProcessedCount;
   }
 

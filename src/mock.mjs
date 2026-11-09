@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { gunzipSync } from 'node:zlib';
 import { verify } from './standard.mjs';
 
 export async function startMock({ secret, previousSecret, retiredSecret, tenantBSecret,
@@ -21,6 +22,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafePoisonNestedIdDedupe = false, unsafeCommitNestedIdBeforeReject = false,
   supportPayloadSizeValidation = true, unsafeAcceptOversizedSignedPayload = false,
   unsafePoisonOversizedDedupe = false, unsafeCommitOversizedBeforeReject = false,
+  supportGzipInflationCap = true, unsafeAcceptOversizedGzip = false,
+  unsafeCacheOversizedGzip = false, unsafeCommitOversizedGzipBeforeReject = false,
   supportContentTypeValidation = true, unsafeAcceptWrongContentType = false,
   unsafePoisonWrongContentTypeDedupe = false,
   unsafeCommitWrongContentTypeBeforeReject = false,
@@ -607,6 +610,37 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         processedCount += 1; seen.add(id);
       }
       res.writeHead(413); res.end('synthetic body size limit exceeded'); return;
+    }
+    if (supportGzipInflationCap && typeof id === 'string' && id.startsWith('wfl_gzipcap_')) {
+      if (req.headers['content-encoding'] !== 'gzip') {
+        res.writeHead(415); res.end('gzip required for synthetic cap probe'); return;
+      }
+      let inflated;
+      let exceeded = false;
+      try {
+        // maxOutputLength bounds memory even for highly compressible input.
+        inflated = gunzipSync(rawBody, { maxOutputLength: 1024 });
+      } catch (error) {
+        if (error?.code === 'ERR_BUFFER_TOO_LARGE') exceeded = true;
+        else { res.writeHead(400); res.end('invalid synthetic gzip'); return; }
+      }
+      if (exceeded) {
+        if (unsafeAcceptOversizedGzip) {
+          processedCount += 1; seen.add(id);
+          res.writeHead(200); res.end('inflated oversized event accepted'); return;
+        }
+        if (unsafeCacheOversizedGzip) seen.add(id);
+        if (unsafeCommitOversizedGzipBeforeReject) {
+          processedCount += 1; seen.add(id);
+        }
+        res.writeHead(413); res.end('inflated synthetic body limit exceeded'); return;
+      }
+      let event;
+      try { event = JSON.parse(inflated.toString('utf8')); }
+      catch { res.writeHead(400); res.end('invalid inflated JSON'); return; }
+      if (event?.type !== 'test.created' || event?.data?.id !== id) {
+        res.writeHead(422); res.end('invalid compressed synthetic event'); return;
+      }
     }
     if (supportContentTypeValidation && typeof id === 'string' &&
         id.startsWith('wfl_media_') && req.headers['content-type'] !== 'application/json') {
