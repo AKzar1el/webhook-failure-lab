@@ -88,6 +88,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeAcknowledgeConflictingPayload = false, unsafeCommitConflictingPayload = false,
   unsafeRacyConcurrentConflict = false,
   unsafeDedupeBySignature = false, unsafeRejectResignedDuplicate = false,
+  unsafeRacyResignedDuplicate = false,
   unsafeCaseFoldEventIds = false, unsafeRejectCaseVariantEventId = false,
   unsafeInheritedEventIdCache = false, unsafePrototypeSetterEventIdCache = false,
   unsafeRejectPrototypeEventIds = false,
@@ -804,7 +805,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       seenConflictBodies.set(id, body);
       res.writeHead(200); res.end('accepted'); return;
     }
-    if (typeof id === 'string' && id.startsWith('wfl_resign_') &&
+    if (typeof id === 'string' &&
+        (id.startsWith('wfl_resign_') || id.startsWith('wfl_resignrace_')) &&
         (unsafeDedupeBySignature || unsafeRejectResignedDuplicate)) {
       const signatureSeen = seenResignedSignatures.has(req.headers['webhook-signature']);
       if (unsafeRejectResignedDuplicate && seen.has(id) && !signatureSeen) {
@@ -814,6 +816,14 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       if (unsafeDedupeBySignature ? !signatureSeen : !seen.has(id)) processedCount += 1;
       seenResignedSignatures.add(req.headers['webhook-signature']);
       seen.add(id);
+      res.writeHead(200); res.end('accepted'); return;
+    }
+    if (unsafeRacyResignedDuplicate && typeof id === 'string' &&
+        id.startsWith('wfl_resignrace_')) {
+      // Both signed deliveries can observe an empty idempotency cache before either commits.
+      const alreadySeen = seen.has(id);
+      if (!alreadySeen) await rendezvous(id, 2);
+      if (!alreadySeen) { processedCount += 1; seen.add(id); }
       res.writeHead(200); res.end('accepted'); return;
     }
     if (supportOrderTransitions && typeof id === 'string' && id.startsWith('wfl_order_')) {

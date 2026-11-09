@@ -799,6 +799,23 @@ receiver/provider explicitly permits re-signing the same delivery ID;
 it does **not** prove that any particular provider actually re-signs retries,
 nor that unobserved business-side effects occur exactly once.
 
+### Opt-in concurrent re-signed duplicate delivery
+
+Add `"concurrentResignedDuplicateDelivery": true` to test two simultaneously
+submitted, correctly authenticated deliveries with the same event ID and raw
+body but distinct, fresh one-second-apart timestamps and HMACs. Both must
+return `successStatus`; a third replay of the second signature must also be
+acknowledged. Across all three deliveries the local observer must report
+**one** additional processed effect. Unlike the sequential re-signing check,
+this exercises the receiver's concurrent idempotency decision.
+
+Three deliberately broken localhost fixtures demonstrate signature-keyed
+deduplication, HTTP 409 rejection of a valid re-signature, and two requests
+both reading an empty dedupe record before committing. This is a bounded
+two-request race, not exhaustive atomicity proof. Enable it only if the
+receiver contract permits a retry to be re-signed for the same ID; it proves
+only receiver-reported counts, not exactly-once external business effects.
+
 ### Opt-in future-dated signed timestamp rejection
 
 Add `"rejectFutureSignedTimestamp": true` to `lab.json` to verify that a
