@@ -84,6 +84,21 @@ test('mixed-case wire probe composes with a separate signed media-type check', a
   });
 });
 
+test('mixed-case signed replay and aborted upload retry compose after main reconciliation', async () => {
+  await withReceiver({}, async (config) => {
+    const result = await runLab({ ...config, mixedCaseWebhookHeaders: true,
+      partialBodyUploadAbort: true }, { secret });
+    assert.equal(result.success, true);
+    assert.equal(result.scenarios.length, 6);
+    const mixed = result.scenarios.find((s) => s.scenario === 'mixed_case_header_replay');
+    const partial = result.scenarios.find((s) => s.scenario === 'partial_body_upload_abort_retry');
+    assert.deepEqual(mixed.observedCounts, [2, 2]);
+    assert.deepEqual(partial.observedCounts, [2, 3, 3]);
+    assert.equal(partial.firstAttemptOutcome, 'transport_error');
+    assert.deepEqual(partial.httpStatuses, [200, 200]);
+  });
+});
+
 test('CLI emits only a redacted mixed-case-header verdict', async () => {
   await withReceiver({}, async (config) => {
     const directory = await mkdtemp(join(tmpdir(), 'wfl-headercase-'));

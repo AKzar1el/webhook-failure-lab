@@ -57,6 +57,7 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeDedupeByTransferFraming = false,
   unsafeRejectMixedCaseWebhookHeaders = false, unsafeDedupeByHeaderSpelling = false,
   unsafeRejectLowercaseHeaderReplay = false,
+  unsafeReserveTruncatedUploadId = false, unsafeCommitTruncatedUpload = false,
   supportUtf8Validation = true, unsafeAcceptInvalidUtf8 = false,
   unsafeCacheInvalidUtf8 = false, unsafeCommitInvalidUtf8BeforeReject = false,
   unsafeCoalesceDistinctEvents = false, unsafeRejectConcurrentDistinct = false,
@@ -156,10 +157,23 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     }
     const chunks = [];
     let bodyBytes = 0;
-    for await (const chunk of req) {
-      bodyBytes += chunk.length;
-      if (bodyBytes > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
-      chunks.push(chunk);
+    try {
+      for await (const chunk of req) {
+        bodyBytes += chunk.length;
+        if (bodyBytes > 65536) { res.writeHead(413); res.end(); req.destroy(); return; }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      if (req.complete) throw error;
+      const abortedId = req.headers['webhook-id'];
+      if (typeof abortedId === 'string' && abortedId.startsWith('wfl_partialupload_')) {
+        // Deliberately broken receivers trust an incomplete body's unauthenticated
+        // ID and reserve/commit before all signed bytes have been received.
+        if (unsafeReserveTruncatedUploadId || unsafeCommitTruncatedUpload) seen.add(abortedId);
+        if (unsafeCommitTruncatedUpload) processedCount += 1;
+      }
+      res.destroy();
+      return;
     }
     const rawBody = Buffer.concat(chunks);
     const body = rawBody.toString('utf8');

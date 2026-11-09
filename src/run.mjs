@@ -153,6 +153,41 @@ function postChunkedSignedUtf8(endpoint, { id, timestamp, signature, body, signa
   });
 }
 
+function postAbortedPartialBody(endpoint, { id, timestamp, signature, body, signal }) {
+  // Advertise the complete signed byte length, write only a prefix, then close
+  // the client socket. A broken receiver may reserve/commit before body completion.
+  return new Promise((resolve, reject) => {
+    let responded = false;
+    let closedByProbe = false;
+    const outgoing = httpRequest(requireLoopbackUrl(endpoint), {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'content-length': body.length,
+        'webhook-id': id, 'webhook-timestamp': String(timestamp),
+        'webhook-signature': signature },
+    }, (response) => {
+      responded = true;
+      response.resume();
+      response.once('end', () => resolve(`http_${response.statusCode}`));
+      response.once('error', reject);
+    });
+    outgoing.once('error', (error) => {
+      if (closedByProbe && !responded) resolve('transport_error');
+      else reject(error);
+    });
+    outgoing.once('close', () => {
+      if (!responded && closedByProbe) resolve('transport_error');
+      else if (!responded) reject(new Error('Upload closed before deliberate abort'));
+    });
+    const prefix = body.subarray(0, Math.max(1, Math.floor(body.length / 3)));
+    outgoing.write(prefix, () => {
+      if (!outgoing.destroyed) {
+        closedByProbe = true;
+        outgoing.destroy();
+      }
+    });
+  });
+}
+
 function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecret) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('Config must be an object');
@@ -278,6 +313,10 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   const mixedCaseWebhookHeaders = config.mixedCaseWebhookHeaders;
   if (mixedCaseWebhookHeaders !== undefined && typeof mixedCaseWebhookHeaders !== 'boolean') {
     throw new TypeError('mixedCaseWebhookHeaders must be a boolean');
+  }
+  const partialBodyUploadAbort = config.partialBodyUploadAbort;
+  if (partialBodyUploadAbort !== undefined && typeof partialBodyUploadAbort !== 'boolean') {
+    throw new TypeError('partialBodyUploadAbort must be a boolean');
   }
   const rejectInvalidUtf8Retry = config.rejectInvalidUtf8Retry;
   if (rejectInvalidUtf8Retry !== undefined && typeof rejectInvalidUtf8Retry !== 'boolean') {
@@ -466,7 +505,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectMissingEventIdRetry, rejectDuplicateWireEventIdRetry,
     rejectDuplicateWireTimestampRetry, rejectDuplicateWireSignatureRetry,
     rejectDuplicateWireContentTypeRetry, rejectDuplicateWireContentEncodingRetry,
-    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders,
+    chunkedSignedUtf8Replay, mixedCaseWebhookHeaders, partialBodyUploadAbort,
     rejectInvalidUtf8Retry,
     concurrentDuplicateDeliveries, concurrentDistinctDeliveries,
     retryAfterTransientFailure, retryAfterRateLimit, retryAfterCommittedError,
@@ -2369,6 +2408,41 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
       passed: httpStatuses.every((status) => status === 202) &&
         observedCounts.every((count) => count === expectedProcessedCount),
       httpStatuses, observedCounts, expectedProcessedCount });
+    expectedCount = expectedProcessedCount;
+  }
+
+  if (options.partialBodyUploadAbort) {
+    const eventId = `wfl_partialupload_${randomUUID().replaceAll('-', '')}`;
+    const rawBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: eventId } });
+    const bodyBytes = Buffer.from(rawBody);
+    const signature = sign({ secret, id: eventId, timestamp: now, body: bodyBytes });
+    const headers = { 'content-type': 'application/json', 'webhook-id': eventId,
+      'webhook-timestamp': String(now), 'webhook-signature': signature };
+    const firstAttemptOutcome = await postAbortedPartialBody(options.endpoint,
+      { id: eventId, timestamp: now, signature, body: bodyBytes, signal: timeout() });
+    // Allow the receiver to observe the socket termination before checking state.
+    // This is a bounded observation window, not a durability guarantee.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const afterAbort = await observe();
+    const retry = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const afterRetry = await observe();
+    const replay = await request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: rawBody,
+    });
+    const afterReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [retry.status, replay.status];
+    const observedCounts = [afterAbort, afterRetry, afterReplay];
+    reports.push({ scenario: 'partial_body_upload_abort_retry',
+      passed: firstAttemptOutcome === 'transport_error' &&
+        httpStatuses.every((status) => status === options.successStatus) &&
+        observedCounts[0] === expectedCount &&
+        observedCounts[1] === expectedProcessedCount &&
+        observedCounts[2] === expectedProcessedCount,
+      firstAttemptOutcome, httpStatuses, observedCounts, expectedProcessedCount });
     expectedCount = expectedProcessedCount;
   }
 
