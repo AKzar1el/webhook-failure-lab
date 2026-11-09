@@ -102,6 +102,8 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafeClassifyTenantCollisionBeforeAuth = false,
   unsafeAcceptFutureTimestamp = false, unsafeCommitFutureBeforeReject = false,
   unsafeAcknowledgeTamperedDuplicate = false, unsafeCommitTamperedDuplicateBeforeReject = false,
+  unsafeAcknowledgeUnsignedCachedDuplicate = false,
+  unsafeCommitUnsignedCachedBeforeReject = false,
   unsafeAcknowledgeRetiredDuplicate = false, unsafeCommitRetiredDuplicateBeforeReject = false,
   unsafeAcknowledgeStaleDuplicate = false, unsafeCommitStaleDuplicateBeforeReject = false,
   unsafeAcknowledgeFutureDuplicate = false, unsafeCommitFutureDuplicateBeforeReject = false,
@@ -292,6 +294,12 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         id.startsWith('wfl_dupauth_') && seen.has(id)) {
       // Broken receiver acknowledges known IDs before verifying the incoming HMAC.
       res.writeHead(200); res.end('accepted duplicate'); return;
+    }
+    const unsignedCachedDuplicate = typeof id === 'string' &&
+      id.startsWith('wfl_unsigneddup_') && seen.has(id) &&
+      req.headers['webhook-signature'] === undefined;
+    if (unsafeAcknowledgeUnsignedCachedDuplicate && unsignedCachedDuplicate) {
+      res.writeHead(200); res.end('cached ID accepted before signature check'); return;
     }
     const rawJsonProbe = typeof id === 'string' && id.startsWith('wfl_rawjson_');
     if (unsafeAcknowledgeRawJsonBeforeAuth && rawJsonProbe && seen.has(id)) {
@@ -503,6 +511,9 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
       if (unsafeCommitTamperedDuplicateBeforeReject && typeof id === 'string' &&
           id.startsWith('wfl_dupauth_') && seen.has(id)) {
         // Broken receiver rejects the invalid HMAC only after another effect.
+        processedCount += 1;
+      }
+      if (unsafeCommitUnsignedCachedBeforeReject && unsignedCachedDuplicate) {
         processedCount += 1;
       }
       if (unsafeCommitRetiredDuplicateBeforeReject && retiredCachedDuplicate) {

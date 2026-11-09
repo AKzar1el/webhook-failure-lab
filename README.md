@@ -34,6 +34,21 @@ npm run verify
 
 The four initial scenarios are: valid event (count +1), **duplicate same event ID** (no extra effect), **body tampering after signing** (reject + no effect), and **signed but expired timestamp** (reject + no effect). The CLI exits 0 only if all checks pass, 1 for assertion failures, 2 for bad input/transport errors. Output is machine-readable JSON.
 
+### Optional unsigned replay of a cached event ID
+
+Add `"rejectUnsignedCachedDuplicate": true` when a local receiver must authenticate
+**every delivery, including duplicates**. The harness first delivers a valid signed
+event, retries its identical ID/body/timestamp without the `webhook-signature`
+header, then repeats the original signed delivery. Expected statuses are
+`successStatus`, configured 4xx (not 409), and `successStatus`; only the
+first delivery increments receiver-reported `processedCount`.
+
+Two deliberately broken local receivers expose dedupe-cache acknowledgement
+before authentication and committing an effect before rejecting the unsigned
+retry. This complements missing signatures on *fresh* event IDs and invalid
+signatures on *cached* IDs. It verifies an explicit local authentication
+contract and reported counts, not unobserved external business effects.
+
 ### CI-readable SARIF findings (opt-in output format)
 
 Use `node bin/wfl.mjs run lab.json --format sarif` to emit SARIF 2.1.0
