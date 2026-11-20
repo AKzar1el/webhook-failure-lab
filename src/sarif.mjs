@@ -2,6 +2,12 @@
 // Emit only allowlisted numeric and synthetic-state observations; never payloads or keys.
 import { evidenceFor } from './report-evidence.mjs';
 
+const caveat = 'processedCount is a user-provided observer, not independently proven business-side-effect correctness';
+
+function safeScenario(value) {
+  return /^[a-z][a-z0-9_]{0,95}$/.test(value) ? value : 'redacted_invalid_scenario';
+}
+
 function ruleId(scenario) {
   return 'WFL_' + scenario.replace(/[^a-zA-Z0-9]+/g, '_').toUpperCase();
 }
@@ -14,15 +20,15 @@ export function toSarif(result) {
     throw new TypeError('SARIF export requires a completed webhook lab result');
   }
 
-  const scenarios = [...new Set(result.scenarios.map((item) => item.scenario))];
+  const scenarios = [...new Set(result.scenarios.map((item) => safeScenario(item.scenario)))];
   const rules = scenarios.map((scenario) => ({
     id: ruleId(scenario),
     shortDescription: { text: `Webhook receiver contract: ${scenario}` },
   }));
   const results = result.scenarios.filter((report) => !report.passed).map((report) => ({
-    ruleId: ruleId(report.scenario),
+    ruleId: ruleId(safeScenario(report.scenario)),
     level: 'error',
-    message: { text: `Local webhook receiver failed ${report.scenario}. ` +
+    message: { text: `Local webhook receiver failed ${safeScenario(report.scenario)}. ` +
       `Observed receiver-reported values: ${JSON.stringify(evidenceFor(report))}. ` +
       'The observer does not prove external exactly-once business effects.' },
   }));
@@ -35,7 +41,7 @@ export function toSarif(result) {
       results,
       properties: {
         coverage: scenarios,
-        caveat: result.caveat,
+        caveat,
       },
     }],
   };

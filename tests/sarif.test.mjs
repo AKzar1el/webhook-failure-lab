@@ -85,6 +85,21 @@ test('SARIF never includes arbitrary observer strings or unexpected report field
   });
 });
 
+test('SARIF redacts untrusted scenario names and caller-supplied caveats', async () => {
+  const { toSarif } = await import('../src/sarif.mjs');
+  const marker = 'synthetic_sensitive_token';
+  const sarif = toSarif({
+    success: false,
+    scenarios: [{ scenario: `<${marker}>`, passed: false }],
+    caveat: marker,
+  });
+  const output = JSON.stringify(sarif);
+  assert.ok(!output.includes(marker));
+  assert.equal(sarif.runs[0].tool.driver.rules[0].id,
+    'WFL_REDACTED_INVALID_SCENARIO');
+  assert.deepEqual(sarif.runs[0].properties.coverage, ['redacted_invalid_scenario']);
+});
+
 test('CLI --format sarif emits parseable SARIF for a passing receiver', async () => {
   await withReceiver({}, async (config) => {
     const output = await runCli(config);
