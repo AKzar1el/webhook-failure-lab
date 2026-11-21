@@ -27,10 +27,11 @@ function wrapSuite(tests, failures, errors, testCases) {
 }
 
 export function toJunit(result) {
-  if (!result || !Array.isArray(result.scenarios) ||
+  if (!result || !Array.isArray(result.scenarios) || result.scenarios.length === 0 ||
       typeof result.success !== 'boolean' ||
       result.scenarios.some((item) => typeof item?.scenario !== 'string' ||
-        typeof item.passed !== 'boolean')) {
+        typeof item.passed !== 'boolean') ||
+      result.success !== result.scenarios.every((item) => item.passed)) {
     throw new TypeError('JUnit export requires a completed webhook lab result');
   }
 
