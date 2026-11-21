@@ -83,6 +83,22 @@ test('JUnit excludes untrusted scenario names and report strings', async () => {
   assert.ok(!xml.includes('debug'));
 });
 
+test('JUnit rejects empty or contradictory results instead of reporting a green suite', async () => {
+  const { toJunit } = await import('../src/junit.mjs');
+  const incomplete = [
+    { success: true, scenarios: [] },
+    { success: false, scenarios: [] },
+    { success: false, scenarios: [{ scenario: 'valid_delivery', passed: true }] },
+    { success: true, scenarios: [{ scenario: 'duplicate_delivery', passed: false }] },
+  ];
+  for (const result of incomplete) {
+    assert.throws(() => toJunit(result), {
+      name: 'TypeError',
+      message: 'JUnit export requires a completed webhook lab result',
+    });
+  }
+});
+
 test('JUnit execution failure remains valid XML and does not assert a receiver failure', async () => {
   let observerRequests = 0;
   let webhookRequests = 0;
