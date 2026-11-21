@@ -40,7 +40,13 @@ test('secret key length and base64 are validated', () => {
 });
 test('allows only local HTTP loopback', () => {
   assert.equal(requireLoopbackUrl('http://127.0.0.1:3123/webhook'), 'http://127.0.0.1:3123/webhook');
-  for (const url of ['https://example.com/', 'http://example.com/', 'http://127.0.0.2:3000/', 'file:///etc/passwd', 'http://user:pw@localhost:3000/', 'http://localhost:8080/#fragment']) {
+  for (const url of [
+    'https://example.com/', 'http://example.com/',
+    'http://127.0.0.2:3000/', 'file:///etc/passwd',
+    'http://user:pw@localhost:3000/', 'http://localhost:8080/#fragment',
+    'http://127.0.0.1:0/webhook', 'http://localhost:0/webhook',
+    'http://[::1]:0/webhook',
+  ]) {
     assert.throws(() => requireLoopbackUrl(url));
   }
 });
