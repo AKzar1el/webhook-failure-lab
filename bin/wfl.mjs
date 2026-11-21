@@ -13,7 +13,8 @@ async function main() {
     return 2;
   }
   try {
-    const config = JSON.parse(await readFile(args[1], 'utf8'));
+    const configText = await readFile(args[1], 'utf8');
+    const config = JSON.parse(configText.replace(/^\uFEFF/, ''));
     const result = await runLab(config, { secret: process.env.WFL_SECRET,
       previousSecret: process.env.WFL_PREVIOUS_SECRET, retiredSecret: process.env.WFL_RETIRED_SECRET,
       tenantBSecret: process.env.WFL_TENANT_B_SECRET });
