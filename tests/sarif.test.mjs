@@ -85,6 +85,47 @@ test('SARIF never includes arbitrary observer strings or unexpected report field
   });
 });
 
+test('SARIF redacts untrusted scenario names and caller-supplied caveats', async () => {
+  const { toSarif } = await import('../src/sarif.mjs');
+  const marker = 'synthetic_sensitive_token';
+  const sarif = toSarif({
+    success: false,
+    scenarios: [{ scenario: `<${marker}>`, passed: false }],
+    caveat: marker,
+  });
+  const output = JSON.stringify(sarif);
+  assert.ok(!output.includes(marker));
+  assert.equal(sarif.runs[0].tool.driver.rules[0].id,
+    'WFL_REDACTED_INVALID_SCENARIO');
+  assert.deepEqual(sarif.runs[0].properties.coverage, ['redacted_invalid_scenario']);
+});
+
+test('SARIF redacts unknown valid-format scenarios without hiding legitimate rule IDs', async () => {
+  const { toSarif } = await import('../src/sarif.mjs');
+  const marker = 'synthetic_sensitive_token';
+  const sarif = toSarif({
+    success: false,
+    scenarios: [
+      { scenario: marker, passed: false },
+      { scenario: 'duplicate_json_data_key_retry', passed: false },
+      { scenario: 'crash_before_commit_parallel_retries', passed: false },
+      { scenario: 'crash_after_persist_parallel_retries', passed: false },
+    ],
+    caveat: marker,
+  });
+  const run = sarif.runs[0];
+  const expected = [
+    'WFL_REDACTED_INVALID_SCENARIO',
+    'WFL_DUPLICATE_JSON_DATA_KEY_RETRY',
+    'WFL_CRASH_BEFORE_COMMIT_PARALLEL_RETRIES',
+    'WFL_CRASH_AFTER_PERSIST_PARALLEL_RETRIES',
+  ];
+  assert.ok(!JSON.stringify(sarif).includes(marker));
+  assert.deepEqual(run.tool.driver.rules.map((rule) => rule.id), expected);
+  assert.deepEqual(run.results.map((result) => result.ruleId), expected);
+  assert.deepEqual(run.properties.coverage, expected.map((id) => id.slice(4).toLowerCase()));
+});
+
 test('CLI --format sarif emits parseable SARIF for a passing receiver', async () => {
   await withReceiver({}, async (config) => {
     const output = await runCli(config);
