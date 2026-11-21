@@ -172,3 +172,18 @@ test('default JSON mode preserves the existing exit-2 error channel', async () =
     assert.match(output.stderr, /Unable to verify/);
   });
 });
+
+test('SARIF refuses empty or contradictory results instead of reporting completed verification', async () => {
+  const { toSarif } = await import('../src/sarif.mjs');
+  for (const result of [
+    { success: true, scenarios: [] },
+    { success: false, scenarios: [] },
+    { success: false, scenarios: [{ scenario: 'valid_delivery', passed: true }] },
+    { success: true, scenarios: [{ scenario: 'duplicate_delivery', passed: false }] },
+  ]) {
+    assert.throws(() => toSarif(result), {
+      name: 'TypeError',
+      message: 'SARIF export requires a completed webhook lab result',
+    });
+  }
+});
