@@ -905,6 +905,21 @@ test('opt-in retention check protects duplicates just before TTL and rejects sta
   });
 });
 
+test('retention clock advance does not stale other opt-in signed delivery probes', async () => {
+  await withRetentionReceiver({}, async (config, callbacks) => {
+    const result = await runLab({
+      ...config, retentionWindowSeconds: 60, conflictingEventIdPayload: true,
+    }, { secret, ...callbacks });
+    const conflict = result.scenarios.find((item) =>
+      item.scenario === 'signed_event_id_payload_conflict');
+    assert.deepEqual(conflict.httpStatuses, [200, 200, 409]);
+    assert.equal(conflict.passed, true);
+    assert.equal(result.scenarios.at(-1).scenario, 'retention_boundary_stale_replay');
+    assert.equal(result.scenarios.at(-1).passed, true);
+    assert.equal(result.success, true);
+  });
+});
+
 test('retention check detects a broken receiver that evicts dedupe keys before the declared window', async () => {
   await withRetentionReceiver({ unsafePrematureRetentionEviction: true }, async (config, callbacks) => {
     const result = await runLab({ ...config, retentionWindowSeconds: 60 },
