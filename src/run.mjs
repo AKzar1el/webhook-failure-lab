@@ -2162,39 +2162,6 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     expectedCount = expectedProcessedCount;
   }
 
-  if (options.retentionWindowSeconds !== undefined) {
-    const retentionId = `wfl_retention_${randomUUID().replaceAll('-', '')}`;
-    const retentionBody = JSON.stringify({ type: 'test.created',
-      timestamp: new Date(now * 1000).toISOString(), data: { id: retentionId } });
-    const headers = { 'content-type': 'application/json', 'webhook-id': retentionId,
-      'webhook-timestamp': String(now),
-      'webhook-signature': sign({ secret, id: retentionId, timestamp: now, body: retentionBody }) };
-    const replay = () => request(options.endpoint, {
-      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: retentionBody,
-    });
-    const first = await replay();
-    const afterFirst = await observe();
-    // The caller advances only its synthetic test receiver clock; no real wait or system clock change.
-    await advanceReceiverTime(options.retentionWindowSeconds - 1);
-    const beforeExpiry = await replay();
-    const afterBeforeExpiry = await observe();
-    // At 301 seconds the unchanged signature is stale under the Standard Webhooks 300s tolerance.
-    await advanceReceiverTime(301 - (options.retentionWindowSeconds - 1));
-    const staleReplay = await replay();
-    const afterStaleReplay = await observe();
-    const expectedProcessedCount = expectedCount + 1;
-    const httpStatuses = [first.status, beforeExpiry.status, staleReplay.status];
-    const observedCounts = [afterFirst, afterBeforeExpiry, afterStaleReplay];
-    reports.push({ scenario: 'retention_boundary_stale_replay',
-      passed: httpStatuses[0] === options.successStatus &&
-        httpStatuses[1] === options.successStatus &&
-        options.rejectionStatuses.includes(httpStatuses[2]) &&
-        observedCounts.every((count) => count === expectedProcessedCount),
-      httpStatuses, observedCounts, expectedProcessedCount,
-      retentionWindowSeconds: options.retentionWindowSeconds });
-    expectedCount = expectedProcessedCount;
-  }
-
   if (options.conflictingEventIdPayload) {
     const conflictId = `wfl_conflict_${randomUUID().replaceAll('-', '')}`;
     const firstBody = JSON.stringify({ type: 'test.created',
@@ -2837,6 +2804,41 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
         responses.observedCounts.every((count, index) => count === expectedCounts[index]),
       ...responses, expectedProcessedCount: expectedCount + 2 });
     expectedCount += 2;
+  }
+
+  // Advancing the receiver's synthetic clock makes the original signed timestamp stale.
+  // Keep this probe last so other enabled scenarios can still use fresh signatures.
+  if (options.retentionWindowSeconds !== undefined) {
+    const retentionId = `wfl_retention_${randomUUID().replaceAll('-', '')}`;
+    const retentionBody = JSON.stringify({ type: 'test.created',
+      timestamp: new Date(now * 1000).toISOString(), data: { id: retentionId } });
+    const headers = { 'content-type': 'application/json', 'webhook-id': retentionId,
+      'webhook-timestamp': String(now),
+      'webhook-signature': sign({ secret, id: retentionId, timestamp: now, body: retentionBody }) };
+    const replay = () => request(options.endpoint, {
+      method: 'POST', redirect: 'manual', signal: timeout(), headers, body: retentionBody,
+    });
+    const first = await replay();
+    const afterFirst = await observe();
+    // The caller advances only its synthetic test receiver clock; no real wait or system clock change.
+    await advanceReceiverTime(options.retentionWindowSeconds - 1);
+    const beforeExpiry = await replay();
+    const afterBeforeExpiry = await observe();
+    // At 301 seconds the unchanged signature is stale under the Standard Webhooks 300s tolerance.
+    await advanceReceiverTime(301 - (options.retentionWindowSeconds - 1));
+    const staleReplay = await replay();
+    const afterStaleReplay = await observe();
+    const expectedProcessedCount = expectedCount + 1;
+    const httpStatuses = [first.status, beforeExpiry.status, staleReplay.status];
+    const observedCounts = [afterFirst, afterBeforeExpiry, afterStaleReplay];
+    reports.push({ scenario: 'retention_boundary_stale_replay',
+      passed: httpStatuses[0] === options.successStatus &&
+        httpStatuses[1] === options.successStatus &&
+        options.rejectionStatuses.includes(httpStatuses[2]) &&
+        observedCounts.every((count) => count === expectedProcessedCount),
+      httpStatuses, observedCounts, expectedProcessedCount,
+      retentionWindowSeconds: options.retentionWindowSeconds });
+    expectedCount = expectedProcessedCount;
   }
 
   return { success: reports.every((r) => r.passed), scenarios: reports,
