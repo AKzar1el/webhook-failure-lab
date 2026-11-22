@@ -90,6 +90,11 @@ test('JUnit rejects empty or contradictory results instead of reporting a green 
     { success: false, scenarios: [] },
     { success: false, scenarios: [{ scenario: 'valid_delivery', passed: true }] },
     { success: true, scenarios: [{ scenario: 'duplicate_delivery', passed: false }] },
+    { success: true, scenarios: Array(1) },
+    { success: true, scenarios: [
+      { scenario: 'valid_delivery', passed: true }, ,
+      { scenario: 'duplicate_delivery', passed: true },
+    ] },
   ];
   for (const result of incomplete) {
     assert.throws(() => toJunit(result), {

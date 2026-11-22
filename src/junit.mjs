@@ -29,8 +29,9 @@ function wrapSuite(tests, failures, errors, testCases) {
 export function toJunit(result) {
   if (!result || !Array.isArray(result.scenarios) || result.scenarios.length === 0 ||
       typeof result.success !== 'boolean' ||
-      result.scenarios.some((item) => typeof item?.scenario !== 'string' ||
-        typeof item.passed !== 'boolean') ||
+      // findIndex visits sparse-array holes, unlike some/every.
+      result.scenarios.findIndex((item) => typeof item?.scenario !== 'string' ||
+        typeof item.passed !== 'boolean') !== -1 ||
       result.success !== result.scenarios.every((item) => item.passed)) {
     throw new TypeError('JUnit export requires a completed webhook lab result');
   }
