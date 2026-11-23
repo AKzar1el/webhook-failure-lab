@@ -53,3 +53,21 @@ test('valid typed CI evidence remains unchanged', () => {
   };
   assert.deepEqual(evidenceFor(report), report);
 });
+
+test('CI evidence omits negative counts and resource versions without hiding valid zeros', () => {
+  const observations = {
+    httpStatus: 200, retryAfterZero: false,
+    observedProcessedCount: -1, expectedProcessedCount: -2,
+    observedCounts: [0, -3],
+    observedResourceVersion: -1, expectedResourceVersion: -2,
+    observedResourceVersions: [1, -1], expectedResourceVersions: [-2],
+  };
+  assert.deepEqual(evidenceFor(observations), { httpStatus: 200, retryAfterZero: false });
+  const zeros = {
+    observedProcessedCount: 0, expectedProcessedCount: 0,
+    observedCounts: [0, 1], observedResourceVersion: 0,
+    expectedResourceVersion: 0, observedResourceVersions: [0, 1],
+    expectedResourceVersions: [0],
+  };
+  assert.deepEqual(evidenceFor(zeros), zeros);
+});
