@@ -9,6 +9,7 @@ const evidenceFields = [
   'observedResourceVersions', 'expectedResourceVersions',
 ];
 const syntheticStates = new Set(['missing', 'created', 'activated']);
+const httpStatusFields = new Set(['httpStatus', 'httpStatuses']);
 const stateFields = new Set([
   'observedResourceState', 'expectedResourceState',
   'observedResourceStates', 'expectedResourceStates',
@@ -24,7 +25,9 @@ export function evidenceFor(report) {
     ? typeof value === 'boolean'
     : stateFields.has(field)
       ? typeof value === 'string' && syntheticStates.has(value)
-      : Number.isSafeInteger(value);
+      : httpStatusFields.has(field)
+        ? Number.isInteger(value) && value >= 100 && value <= 599
+        : Number.isSafeInteger(value);
   // findIndex visits missing array entries; every would allow null holes in exported JSON.
   const safeValue = (field, value) => listFields.has(field)
     ? Array.isArray(value) && value.length <= 16 &&

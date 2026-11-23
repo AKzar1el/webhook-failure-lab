@@ -12,6 +12,16 @@ test('dense bounded observations remain in evidence', () => {
   assert.deepEqual(evidenceFor(report), report);
 });
 
+test('CI evidence excludes impossible HTTP statuses without losing valid observations', () => {
+  const invalid = { httpStatus: -1, httpStatuses: [200, 999], observedProcessedCount: 2 };
+  assert.deepEqual(evidenceFor(invalid), { observedProcessedCount: 2 });
+  for (const status of [0, 99, 600, 999]) {
+    assert.deepEqual(evidenceFor({ httpStatus: status }), {});
+  }
+  const valid = { httpStatus: 100, httpStatuses: [100, 599] };
+  assert.deepEqual(evidenceFor(valid), valid);
+});
+
 test('CI evidence never exports a field with the wrong primitive type', () => {
   const report = {
     httpStatus: true,
