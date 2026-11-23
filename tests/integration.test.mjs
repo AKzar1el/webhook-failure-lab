@@ -205,6 +205,8 @@ test('rejects status misconfiguration', async () => {
   await withServer({}, async (config) => {
     await assert.rejects(() => runLab({ ...config, timeoutMs: 60000 }, { secret }));
     await assert.rejects(() => runLab({ ...config, rejectionStatuses: [] }, { secret }));
+    await assert.rejects(() => runLab({ ...config, rejectionStatuses: Array(1) }, { secret }),
+      /Invalid expected HTTP statuses/);
   });
 });
 test('detects receiver accepting stale signed timestamps', async () => {

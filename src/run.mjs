@@ -254,7 +254,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   const rejectionStatuses = config.rejectionStatuses ?? [400, 401, 403];
   if (!Number.isInteger(successStatus) || successStatus < 200 || successStatus > 299 ||
       !Array.isArray(rejectionStatuses) || rejectionStatuses.length === 0 ||
-      rejectionStatuses.some((x) => !Number.isInteger(x) || x < 400 || x > 499)) {
+      rejectionStatuses.findIndex((x) => !Number.isInteger(x) || x < 400 || x > 499) !== -1) {
     throw new TypeError('Invalid expected HTTP statuses');
   }
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
