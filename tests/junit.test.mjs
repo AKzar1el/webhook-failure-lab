@@ -142,3 +142,20 @@ test('JUnit malformed config fails closed with an execution error and no deliver
     assert.equal(state.processedCount, 0);
   });
 });
+
+test('JUnit rejects duplicate testcase identities instead of exporting ambiguous results', async () => {
+  const { toJunit } = await import('../src/junit.mjs');
+  const conflicting = (scenarios) => ({ success: false, scenarios });
+  const report = (scenario, passed) => ({ scenario, passed,
+    observedProcessedCount: passed ? 1 : 2, expectedProcessedCount: 1 });
+
+  // Repeated valid identifiers can make a passing and failing case indistinguishable.
+  assert.throws(() => toJunit(conflicting([
+    report('duplicate_delivery', true), report('duplicate_delivery', false),
+  ])), /completed webhook lab result/);
+
+  // Different untrusted labels can also collide after safeScenario redaction.
+  assert.throws(() => toJunit(conflicting([
+    report('invalid<one>', true), report('invalid<two>', false),
+  ])), /completed webhook lab result/);
+});

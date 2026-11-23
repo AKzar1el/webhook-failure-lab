@@ -36,8 +36,12 @@ export function toJunit(result) {
     throw new TypeError('JUnit export requires a completed webhook lab result');
   }
 
-  const cases = result.scenarios.flatMap((report) => {
-    const name = safeScenario(report.scenario);
+  const names = result.scenarios.map((report) => safeScenario(report.scenario));
+  if (new Set(names).size !== names.length) {
+    throw new TypeError('JUnit export requires a completed webhook lab result');
+  }
+  const cases = result.scenarios.flatMap((report, index) => {
+    const name = names[index];
     if (report.passed) {
       return [`    <testcase classname="WebhookFailureLab" name="${name}" />`];
     }
