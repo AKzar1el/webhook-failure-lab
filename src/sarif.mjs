@@ -20,6 +20,9 @@ export function toSarif(result) {
     id: ruleId(scenario),
     shortDescription: { text: `Webhook receiver contract: ${scenario}` },
   }));
+  if (new Set(rules.map((rule) => rule.id)).size !== rules.length) {
+    throw new TypeError('SARIF export requires unique scenario rule IDs');
+  }
   const results = result.scenarios.filter((report) => !report.passed).map((report) => ({
     ruleId: ruleId(report.scenario),
     level: 'error',

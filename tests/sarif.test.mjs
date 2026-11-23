@@ -187,3 +187,28 @@ test('SARIF refuses empty or contradictory results instead of reporting complete
     });
   }
 });
+
+test('SARIF rejects different scenario names that collide on a rule ID', async () => {
+  const { toSarif } = await import('../src/sarif.mjs');
+  assert.throws(() => toSarif({
+    success: true,
+    scenarios: [
+      { scenario: 'valid_delivery', passed: true },
+      { scenario: 'valid-delivery', passed: true },
+    ],
+  }), {
+    name: 'TypeError',
+    message: 'SARIF export requires unique scenario rule IDs',
+  });
+
+  const repeated = toSarif({
+    success: false,
+    scenarios: [
+      { scenario: 'valid_delivery', passed: false },
+      { scenario: 'valid_delivery', passed: false },
+    ],
+  });
+  assert.deepEqual(repeated.runs[0].tool.driver.rules.map((rule) => rule.id),
+    ['WFL_VALID_DELIVERY']);
+  assert.equal(repeated.runs[0].results.length, 2);
+});
