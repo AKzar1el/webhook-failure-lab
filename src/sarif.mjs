@@ -9,8 +9,9 @@ function ruleId(scenario) {
 export function toSarif(result) {
   if (!result || !Array.isArray(result.scenarios) || result.scenarios.length === 0 ||
       typeof result.success !== 'boolean' ||
-      result.scenarios.some((item) => typeof item?.scenario !== 'string' ||
-        typeof item.passed !== 'boolean') ||
+      // findIndex visits sparse holes; some skips them.
+      result.scenarios.findIndex((item) => typeof item?.scenario !== 'string' ||
+        typeof item.passed !== 'boolean') !== -1 ||
       result.success !== result.scenarios.every((item) => item.passed)) {
     throw new TypeError('SARIF export requires a completed webhook lab result');
   }

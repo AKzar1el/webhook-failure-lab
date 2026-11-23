@@ -212,3 +212,17 @@ test('SARIF rejects different scenario names that collide on a rule ID', async (
     ['WFL_VALID_DELIVERY']);
   assert.equal(repeated.runs[0].results.length, 2);
 });
+
+test('SARIF rejects sparse scenario arrays as incomplete results', async () => {
+  const { toSarif } = await import('../src/sarif.mjs');
+  for (const scenarios of [
+    Array(1),
+    [{ scenario: 'valid_delivery', passed: true }, ,
+      { scenario: 'duplicate_delivery', passed: true }],
+  ]) {
+    assert.throws(() => toSarif({ success: true, scenarios }), {
+      name: 'TypeError',
+      message: 'SARIF export requires a completed webhook lab result',
+    });
+  }
+});
