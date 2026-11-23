@@ -44,6 +44,7 @@ test('allows only local HTTP loopback', () => {
     'https://example.com/', 'http://example.com/',
     'http://127.0.0.2:3000/', 'file:///etc/passwd',
     'http://user:pw@localhost:3000/', 'http://localhost:8080/#fragment',
+    'http://localhost:8080/#', 'http://127.0.0.1:8080/webhook?#',
     'http://127.0.0.1:0/webhook', 'http://localhost:0/webhook',
     'http://[::1]:0/webhook',
   ]) {
