@@ -589,7 +589,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
   }
   return { endpoint, observer, successStatus, rejectionStatuses, timeoutMs,
     asyncAckDelivery, asyncAckWaitMs,
-    rejectWrongContentTypeRetry, rejectWrongHttpMethodRetry,
+    rejectMalformedSignedPayload, rejectWrongContentTypeRetry, rejectWrongHttpMethodRetry,
     rejectUnsupportedContentEncodingRetry,
     acceptJsonCharsetContentType, rawJsonSignatureBytes,
     rejectInvalidSignedEventSchema, rejectDuplicateJsonDataKey,
@@ -618,7 +618,7 @@ function checkOptions(config, secret, previousSecret, retiredSecret, tenantBSecr
     rejectFutureSignedTimestamp, rejectFutureDuplicateSignature, rejectNoncanonicalTimestamp,
     rejectTamperedDuplicateSignature, rejectUnsignedCachedDuplicate,
     rejectTamperedEventId, rejectStaleDuplicateSignature,
-    rejectUnauthenticatedCollision,
+    rejectUnauthenticatedCollision, versionedOutOfOrderUpdates,
     restartAfterCommit, crashAfterPersist, crashBeforeCommit, parallelCrashRecoveryRetries,
     retentionWindowSeconds };
 }
@@ -739,7 +739,7 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     expectedCount = expectedProcessedCount;
   }
 
-  if (config.rejectMalformedSignedPayload) {
+  if (options.rejectMalformedSignedPayload) {
     const malformedId = `wfl_malformed_${randomUUID().replaceAll('-', '')}`;
     const malformedBody = '{"type":"test.created","data":';
     const correctedBody = JSON.stringify({ type: 'test.created',
@@ -1796,7 +1796,7 @@ export async function runLab(config, { secret, previousSecret, retiredSecret, te
     expectedCount = expectedProcessedCount;
   }
 
-  if (config.versionedOutOfOrderUpdates) {
+  if (options.versionedOutOfOrderUpdates) {
     const resourceId = `wfl_version_resource_${randomUUID().replaceAll('-', '')}`;
     const makeVersion = (version) => {
       const messageId = `wfl_version_event_${randomUUID().replaceAll('-', '')}`;
