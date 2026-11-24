@@ -28,3 +28,27 @@ test('CLI accepts UTF-8 BOM-prefixed local JSON configuration', async () => {
     await rm(directory, { recursive: true });
   }
 });
+
+test('CLI rejects malformed UTF-8 configuration before sending webhooks', async () => {
+  const secret = 'whsec_' + randomBytes(32).toString('base64');
+  const receiver = await startMock({ secret });
+  const directory = await mkdtemp(join(tmpdir(), 'wfl-invalid-utf8-'));
+  try {
+    const configPath = join(directory, 'config.json');
+    const config = { ...receiver.config, endpoint: `${receiver.config.endpoint}?fixture=INVALID_BYTE` };
+    const [prefix, suffix] = JSON.stringify(config).split('INVALID_BYTE');
+    await writeFile(configPath, Buffer.concat([Buffer.from(prefix), Buffer.from([0xff]), Buffer.from(suffix)]));
+    for (const format of ['json', 'junit', 'sarif']) {
+      const outcome = await execFileAsync(process.execPath,
+        ['bin/wfl.mjs', 'run', configPath, '--format', format],
+        { env: { ...process.env, WFL_SECRET: secret } })
+        .then(() => 0, (error) => error.code);
+      const state = await fetch(receiver.config.observer).then((response) => response.json());
+      assert.deepEqual({ exitCode: outcome, processedCount: state.processedCount },
+        { exitCode: 2, processedCount: 0 }, format);
+    }
+  } finally {
+    await receiver.stop();
+    await rm(directory, { recursive: true });
+  }
+});

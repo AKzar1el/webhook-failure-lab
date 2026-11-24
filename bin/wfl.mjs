@@ -13,8 +13,10 @@ async function main() {
     return 2;
   }
   try {
-    const configText = await readFile(args[1], 'utf8');
-    const config = JSON.parse(configText.replace(/^\uFEFF/, ''));
+    // Reject invalid bytes rather than silently changing configured URL paths or queries.
+    // TextDecoder strips a leading UTF-8 BOM by default.
+    const configText = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(args[1]));
+    const config = JSON.parse(configText);
     const result = await runLab(config, { secret: process.env.WFL_SECRET,
       previousSecret: process.env.WFL_PREVIOUS_SECRET, retiredSecret: process.env.WFL_RETIRED_SECRET,
       tenantBSecret: process.env.WFL_TENANT_B_SECRET });
