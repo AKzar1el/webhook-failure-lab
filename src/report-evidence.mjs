@@ -27,7 +27,7 @@ export function evidenceFor(report) {
       ? typeof value === 'string' && syntheticStates.has(value)
       : httpStatusFields.has(field)
         ? Number.isInteger(value) && value >= 100 && value <= 599
-        : Number.isSafeInteger(value);
+        : Number.isSafeInteger(value) && value >= 0;
   // findIndex visits missing array entries; every would allow null holes in exported JSON.
   const safeValue = (field, value) => listFields.has(field)
     ? Array.isArray(value) && value.length <= 16 &&
