@@ -34,6 +34,18 @@ This demonstrates reported committed-effect checks without claiming external
 exactly-once processing. To test your own receiver, follow the integration
 steps below rather than deploying the demonstration mock.
 
+To preview the actual CI report formats before integrating your own receiver:
+
+```sh
+node scripts/demo.mjs --format junit
+node scripts/demo.mjs --broken --format sarif
+```
+
+The healthy JUnit report has four passing testcases. The broken SARIF report
+contains an error finding for `WFL_DUPLICATE_DELIVERY` and exits 1. Either
+format also supports the healthy and broken modes; `--format json` selects
+the default report. These are local synthetic reports, not CI uploads.
+
 ## Integrate a local receiver
 
 1. Run the application under test **locally** with the Standard Webhooks `whsec_` test secret from `WFL_SECRET`. Use a random synthetic key distinct from production credentials.
