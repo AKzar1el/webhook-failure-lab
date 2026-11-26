@@ -14,6 +14,26 @@ npm run verify
 
 `npm run smoke` starts a throwaway localhost mock receiver on an OS-assigned port. It produces four individual scenario results and exits without contacting any remote service.
 
+### Try the actual CLI with a broken receiver
+
+From the repository root, run either command without installing dependencies
+or configuring a signing key:
+
+```sh
+node scripts/demo.mjs
+node scripts/demo.mjs --broken
+```
+
+The first starts a healthy synthetic localhost receiver and exits 0. The
+second deliberately disables deduplication; it exits 1 and emits a failed
+`duplicate_delivery` scenario with expected processed count 1 and observed
+count 2. Both commands invoke the real CLI using an automatically generated
+synthetic signing key and a temporary configuration, then stop the receiver.
+Exit 2 indicates an execution or usage error, not a receiver verdict.
+This demonstrates reported committed-effect checks without claiming external
+exactly-once processing. To test your own receiver, follow the integration
+steps below rather than deploying the demonstration mock.
+
 ## Integrate a local receiver
 
 1. Run the application under test **locally** with the Standard Webhooks `whsec_` test secret from `WFL_SECRET`. Use a random synthetic key distinct from production credentials.
