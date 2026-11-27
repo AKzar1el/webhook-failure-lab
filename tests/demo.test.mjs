@@ -87,3 +87,48 @@ test('demo rejects missing, invalid and duplicate format options', async () => {
     });
   }
 });
+
+test('lost-ack demo observes a committed effect before retry and no repeat effect', async () => {
+  const { stdout, stderr } = await demo(['--lost-ack']);
+  const report = JSON.parse(stdout);
+  assert.equal(report.success, true);
+  assert.equal(report.scenarios.length, 5);
+  const lost = report.scenarios.find(({ scenario }) => scenario === 'lost_ack_after_commit');
+  assert.equal(lost.passed, true);
+  assert.equal(lost.firstAttemptOutcome, 'transport_error');
+  assert.equal(lost.observedCountAfterLostAck, lost.expectedProcessedCount);
+  assert.equal(lost.observedProcessedCount, lost.expectedProcessedCount);
+  assert.doesNotMatch(stdout + stderr, /whsec_|webhook-signature|127\.0\.0\.1/);
+});
+
+test('broken lost-ack demo isolates the lost dedupe record from baseline checks', async () => {
+  await assert.rejects(demo(['--broken', '--lost-ack']), (error) => {
+    assert.equal(error.code, 1);
+    const report = JSON.parse(error.stdout);
+    assert.equal(report.success, false);
+    assert.equal(report.scenarios.length, 5);
+    const failed = report.scenarios.filter(({ passed }) => !passed);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].scenario, 'lost_ack_after_commit');
+    assert.equal(failed[0].firstAttemptOutcome, 'transport_error');
+    assert.equal(failed[0].observedCountAfterLostAck, failed[0].expectedProcessedCount);
+    assert.equal(failed[0].observedProcessedCount, failed[0].expectedProcessedCount + 1);
+    return true;
+  });
+});
+
+test('lost-ack demo reports the isolated failure in JUnit and rejects duplicate flags', async () => {
+  await assert.rejects(demo(['--lost-ack', '--broken', '--format', 'junit']), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stdout, /<testsuites tests="5" failures="1" errors="0">/);
+    assert.match(error.stdout, /name="lost_ack_after_commit">\s*<failure type="receiver-contract">/);
+    assert.doesNotMatch(error.stdout + error.stderr, /whsec_|webhook-signature|127\.0\.0\.1/);
+    return true;
+  });
+  await assert.rejects(demo(['--lost-ack', '--lost-ack']), (error) => {
+    assert.equal(error.code, 2);
+    assert.equal(error.stdout, '');
+    assert.match(error.stderr, /Usage:/);
+    return true;
+  });
+});
