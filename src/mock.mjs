@@ -160,7 +160,12 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
     });
   }
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      res.writeHead(400); res.end('invalid request target'); return;
+    }
     if (req.method === 'GET' && url.pathname === '/state') {
       res.writeHead(200, { 'content-type': 'application/json' });
       const resourceId = url.searchParams.get('resourceId');
