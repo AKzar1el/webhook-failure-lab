@@ -7,13 +7,22 @@ import { fileURLToPath } from 'node:url';
 import { startMock } from '../src/mock.mjs';
 
 async function main(args) {
-  if (args.length > 1 || (args.length === 1 && args[0] !== '--broken')) {
-    console.error('Usage: node scripts/demo.mjs [--broken]');
-    return 2;
+  let broken = false;
+  let format;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--broken' && !broken) {
+      broken = true;
+    } else if (args[i] === '--format' && format === undefined &&
+        ['json', 'sarif', 'junit'].includes(args[i + 1])) {
+      format = args[++i];
+    } else {
+      console.error('Usage: node scripts/demo.mjs [--broken] [--format json|sarif|junit]');
+      return 2;
+    }
   }
 
   const secret = `whsec_${randomBytes(32).toString('base64')}`;
-  const receiver = await startMock({ secret, dedupe: args.length === 0 });
+  const receiver = await startMock({ secret, dedupe: !broken });
   let directory;
   let configWritten = false;
   try {
@@ -27,7 +36,9 @@ async function main(args) {
       env.SystemRoot = process.env.SystemRoot;
     }
     return await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [cli, 'run', configPath], {
+      const cliArgs = [cli, 'run', configPath];
+      if (format !== undefined) cliArgs.push('--format', format);
+      const child = spawn(process.execPath, cliArgs, {
         env, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true,
       });
       child.once('error', reject);
