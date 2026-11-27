@@ -116,6 +116,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
   unsafePrematureRetentionEviction = false, unsafeAcceptExpiredReplay = false,
   supportVersionedUpdates = true, unsafeApplyStaleVersionedUpdate = false,
   unsafeCommitStaleVersionBeforeReject = false } = {}) {
+  if (dedupeRetentionSeconds !== undefined &&
+      (!Number.isFinite(dedupeRetentionSeconds) || dedupeRetentionSeconds < 0)) {
+    throw new TypeError('dedupeRetentionSeconds must be a finite non-negative number');
+  }
   const seen = new Set();
   const seenCharsetKeys = new Set();
   const seenTransferKeys = new Set();
