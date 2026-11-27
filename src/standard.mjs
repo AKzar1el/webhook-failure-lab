@@ -15,7 +15,7 @@ export function keyFromSecret(secret) {
 
 export function sign({ secret, id, timestamp, body }) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(id) || !Number.isSafeInteger(timestamp) ||
-      (typeof body !== 'string' && !Buffer.isBuffer(body))) {
+      timestamp < 0 || (typeof body !== 'string' && !Buffer.isBuffer(body))) {
     throw new TypeError('Invalid signed webhook metadata or raw body');
   }
   const digest = createHmac('sha256', keyFromSecret(secret))
