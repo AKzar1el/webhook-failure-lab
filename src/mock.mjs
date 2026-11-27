@@ -276,6 +276,10 @@ export async function startMock({ secret, previousSecret, retiredSecret, tenantB
         ? wireTimestamps.at(-1) : req.headers['webhook-timestamp'];
     const ts = Number(timestampHeader);
     const receiverNow = clock();
+    // An invalid clock must not evict a retained ID or permit processing.
+    if (!Number.isFinite(receiverNow)) {
+      res.writeHead(401); res.end('invalid receiver clock'); return;
+    }
     const effectiveRetention = unsafePrematureRetentionEviction
       ? Math.floor(dedupeRetentionSeconds / 2) : dedupeRetentionSeconds;
     if (effectiveRetention !== undefined && seenAt.has(id) &&
