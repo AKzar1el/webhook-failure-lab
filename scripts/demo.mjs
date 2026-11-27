@@ -8,27 +8,32 @@ import { startMock } from '../src/mock.mjs';
 
 async function main(args) {
   let broken = false;
+  let lostAck = false;
   let format;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--broken' && !broken) {
       broken = true;
+    } else if (args[i] === '--lost-ack' && !lostAck) {
+      lostAck = true;
     } else if (args[i] === '--format' && format === undefined &&
         ['json', 'sarif', 'junit'].includes(args[i + 1])) {
       format = args[++i];
     } else {
-      console.error('Usage: node scripts/demo.mjs [--broken] [--format json|sarif|junit]');
+      console.error('Usage: node scripts/demo.mjs [--broken] [--lost-ack] [--format json|sarif|junit]');
       return 2;
     }
   }
 
   const secret = `whsec_${randomBytes(32).toString('base64')}`;
-  const receiver = await startMock({ secret, dedupe: !broken });
+  const receiver = await startMock({ secret, dedupe: lostAck || !broken,
+    unsafeForgetLostAckDedupe: lostAck && broken });
   let directory;
   let configWritten = false;
   try {
     directory = await mkdtemp(join(tmpdir(), 'wfl-demo-'));
     const configPath = join(directory, 'lab.json');
-    await writeFile(configPath, JSON.stringify(receiver.config), { flag: 'wx' });
+    const config = lostAck ? { ...receiver.config, lostAckAfterCommit: true } : receiver.config;
+    await writeFile(configPath, JSON.stringify(config), { flag: 'wx' });
     configWritten = true;
     const cli = fileURLToPath(new URL('../bin/wfl.mjs', import.meta.url));
     const env = { WFL_SECRET: secret };

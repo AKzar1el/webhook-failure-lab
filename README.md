@@ -46,6 +46,19 @@ contains an error finding for `WFL_DUPLICATE_DELIVERY` and exits 1. Either
 format also supports the healthy and broken modes; `--format json` selects
 the default report. These are local synthetic reports, not CI uploads.
 
+To preview recovery from a lost acknowledgement after the receiver commits:
+
+```sh
+node scripts/demo.mjs --lost-ack
+node scripts/demo.mjs --lost-ack --broken --format junit
+```
+
+The healthy mode runs five passing checks. In broken mode the receiver
+commits the effect, drops the response and loses its deduplication record.
+The retry adds a second observed effect; only `lost_ack_after_commit` fails
+and the CLI exits 1. The original four baseline checks still pass. This is
+a synthetic local fault adapter, not evidence of durable crash recovery.
+
 ## Integrate a local receiver
 
 1. Run the application under test **locally** with the Standard Webhooks `whsec_` test secret from `WFL_SECRET`. Use a random synthetic key distinct from production credentials.
