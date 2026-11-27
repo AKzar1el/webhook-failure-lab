@@ -26,6 +26,12 @@ export function sign({ secret, id, timestamp, body }) {
 }
 
 export function verify({ secret, id, timestamp, body, signature, now = Math.floor(Date.now() / 1000), tolerance = 300 }) {
+  // Reject invalid freshness inputs before arithmetic can coerce them or yield NaN.
+  // Positive Infinity is reserved for the explicit freshness-disabled test fixtures.
+  if (!Number.isFinite(now) || typeof tolerance !== 'number' ||
+      Number.isNaN(tolerance) || tolerance < 0) {
+    return false;
+  }
   // The timestamp is part of the signed header text. Numeric normalization would
   // accept altered wire values (e.g. leading zeros or a decimal suffix).
   if ((typeof timestamp !== 'number' && typeof timestamp !== 'string') ||
